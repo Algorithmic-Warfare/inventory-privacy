@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/circuits",
+    "crates/prover",
+    "crates/proof-server",
+]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+
+[profile.release]
+lto = true
+opt-level = 3

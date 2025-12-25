@@ -1,0 +1,19 @@
+# Build outputs
+/target/
+/keys/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Move build artifacts
+packages/*/build/
+
+# Logs
+*.log

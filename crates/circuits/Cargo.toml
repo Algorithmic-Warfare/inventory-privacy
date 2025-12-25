@@ -1,0 +1,23 @@
+[package]
+name = "inventory-circuits"
+version = "0.1.0"
+edition = "2021"
+description = "ZK circuits for private inventory operations"
+
+[dependencies]
+ark-ff = "0.4"
+ark-relations = "0.4"
+ark-r1cs-std = "0.4"
+ark-bn254 = "0.4"
+ark-groth16 = "0.4"
+ark-snark = "0.4"
+ark-crypto-primitives = { version = "0.4", features = ["sponge", "r1cs"] }
+ark-std = "0.4"
+ark-serialize = "0.4"
+
+[dev-dependencies]
+rand = "0.8"
+
+[features]
+default = []
+parallel = ["ark-ff/parallel", "ark-groth16/parallel"]
