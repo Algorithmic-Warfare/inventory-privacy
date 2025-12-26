@@ -25,7 +25,7 @@ module inventory::inventory {
 
     /// Verification keys for all circuits.
     /// Created once during deployment.
-    public struct VerifyingKeys has key {
+    public struct VerifyingKeys has key, store {
         id: UID,
         /// ItemExistsCircuit verification key
         item_exists_vk: vector<u8>,
