@@ -645,8 +645,10 @@ dependencies = [
  "ark-serialize",
  "ark-snark",
  "ark-std",
+ "hex",
  "inventory-circuits",
  "rand",
+ "serde_json",
  "tempfile",
  "thiserror",
 ]

@@ -104,6 +104,8 @@ pub async fn prove_item_exists(
 
     let state = state.read().await;
 
+    // Run proof generation directly - it's fast enough (~150-200ms) and spawn_blocking/threads
+    // add significant overhead due to tracing's thread-local context interfering with Rayon.
     match prove::prove_item_exists(
         &state.keys.item_exists.proving_key,
         &inventory,
