@@ -1,0 +1,31 @@
+procs:
+  sui-local:
+    # Local validator with faucet; force fresh ephemeral genesis each start
+    shell: "npm run start:sui"
+    autostart: true
+
+  fund:
+    # Waits for RPC readiness then ensures address is funded
+    env:
+      FUND_DELAY_SECONDS: "5"
+      MAX_FAUCET_ATTEMPTS: "15"
+      MAX_BALANCE_WAIT: "90"
+    shell: "npm run fund"
+    autostart: false
+
+  deploy:
+    # Publish contracts and initialize VKs
+    shell: "npm run deploy"
+    autostart: false
+
+  proof-server:
+    # Rust API server for proof generation (port 3001)
+    env:
+      RUST_LOG: "info"
+    shell: "npm run server:start"
+    autostart: true
+
+  web:
+    # React web client (port 5173)
+    shell: "npm run client:dev"
+    autostart: true
