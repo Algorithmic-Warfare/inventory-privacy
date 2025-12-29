@@ -15,9 +15,9 @@ const navItems = [
 
 function getTheme(): 'light' | 'dark' {
   if (typeof window !== 'undefined') {
-    return (document.documentElement.getAttribute('data-theme') as 'light' | 'dark') || 'light';
+    return (document.documentElement.getAttribute('data-theme') as 'light' | 'dark') || 'dark';
   }
-  return 'light';
+  return 'dark';
 }
 
 function setTheme(theme: 'light' | 'dark') {
