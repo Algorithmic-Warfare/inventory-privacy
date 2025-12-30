@@ -66,13 +66,13 @@ if ($volumeRegistryId) {
     Write-Host "[deploy] Warning: Could not extract VolumeRegistry ID"
 }
 
-# Create VerifyingKeys
+# Create VerifyingKeys (3 VKs for SMT-based circuits)
 Write-Host "[deploy] Creating VerifyingKeys..."
 $vkOutput = sui client call `
     --package $packageId `
     --module inventory `
     --function init_verifying_keys_and_share `
-    --args $vks.item_exists_vk $vks.withdraw_vk $vks.deposit_vk $vks.transfer_vk $vks.capacity_vk $vks.deposit_capacity_vk $vks.transfer_capacity_vk `
+    --args $vks.state_transition_vk $vks.item_exists_vk $vks.capacity_vk `
     --gas-budget 500000000 `
     --json 2>&1 | Out-String
 
