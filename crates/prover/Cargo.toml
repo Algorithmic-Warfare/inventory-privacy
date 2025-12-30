@@ -8,10 +8,15 @@ description = "Proof generation library for private inventories"
 name = "export-vks"
 path = "src/bin/export_vks.rs"
 
+[[bin]]
+name = "circuit-stats"
+path = "src/bin/circuit-stats.rs"
+
 [dependencies]
 inventory-circuits = { path = "../circuits" }
 ark-ff = "0.4"
 ark-bn254 = "0.4"
+ark-relations = "0.4"
 ark-groth16 = "0.4"
 ark-snark = "0.4"
 ark-serialize = "0.4"

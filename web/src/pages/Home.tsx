@@ -103,7 +103,7 @@ OFF-CHAIN: SMT state, blinding factor (kept secret)`}
                 <div>[OK] Enforce capacity limit</div>
                 <div>[OK] Compute new commitment</div>
               </div>
-              <div className="badge mt-2">~8,500 constraints</div>
+              <div className="badge mt-2">8,255 constraints</div>
             </div>
 
             <div className="card-simple">
@@ -116,7 +116,7 @@ OFF-CHAIN: SMT state, blinding factor (kept secret)`}
                 <div>[OK] Prove SMT membership</div>
                 <div>[OK] quantity &gt;= min_qty</div>
               </div>
-              <div className="badge mt-2">~4,200 constraints</div>
+              <div className="badge mt-2">4,124 constraints</div>
             </div>
 
             <div className="card-simple">
@@ -128,7 +128,7 @@ OFF-CHAIN: SMT state, blinding factor (kept secret)`}
                 <div>[OK] Verify commitment</div>
                 <div>[OK] volume &lt;= max_capacity</div>
               </div>
-              <div className="badge mt-2">~900 constraints</div>
+              <div className="badge mt-2">724 constraints</div>
             </div>
           </div>
         </div>
