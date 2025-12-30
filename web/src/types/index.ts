@@ -171,3 +171,8 @@ export function getVolumeRegistryArray(): number[] {
     ITEM_VOLUMES[15] ?? 0,  // 25 - Crystal
   ];
 }
+
+// Get registry root hash (dummy for demo - in production from on-chain)
+export function getRegistryRoot(): string {
+  return '0x0000000000000000000000000000000000000000000000000000000000000000';
+}

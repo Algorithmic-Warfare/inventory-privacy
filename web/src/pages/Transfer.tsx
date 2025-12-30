@@ -12,9 +12,12 @@ import {
   type LocalInventoryData,
 } from '../components/OnChainInventorySelector';
 import { useContractAddresses } from '../sui/ContractConfig';
-import { buildTransferTx, buildTransferWithCapacityTx, hexToBytes } from '../sui/transactions';
-import { ITEM_NAMES, ITEM_VOLUMES, getVolumeRegistryArray, canDeposit, type InventorySlot, type TransferResult } from '../types';
+import { buildTransferTx, hexToBytes } from '../sui/transactions';
+import { ITEM_NAMES, ITEM_VOLUMES, canDeposit, calculateUsedVolume, getRegistryRoot, type InventorySlot } from '../types';
 import * as api from '../api/client';
+import type { TransferProofs } from '../api/client';
+
+type TransferResult = TransferProofs;
 import type { OnChainInventory } from '../sui/hooks';
 import { hasLocalSigner, getLocalAddress, signAndExecuteWithLocalSigner, getLocalnetClient } from '../sui/localSigner';
 
@@ -65,6 +68,8 @@ export function Transfer() {
   const [error, setError] = useState<string | null>(null);
   const [transferComplete, setTransferComplete] = useState(false);
   const [txDigest, setTxDigest] = useState<string | null>(null);
+  const [proofTimeMs, setProofTimeMs] = useState<number | null>(null);
+  const [txTimeMs, setTxTimeMs] = useState<number | null>(null);
 
   const currentSrcSlots = mode === 'demo' ? source.slots : srcLocalData?.slots || [];
   const currentDstSlots = mode === 'demo' ? destination.slots : dstLocalData?.slots || [];
@@ -84,20 +89,23 @@ export function Transfer() {
       api.generateBlinding(),
     ]);
 
-    const [srcCommitment, dstCommitment] = await Promise.all([
-      api.createCommitment(source.slots, srcBlinding),
-      api.createCommitment(destination.slots, dstBlinding),
+    const srcVolume = calculateUsedVolume(source.slots);
+    const dstVolume = calculateUsedVolume(destination.slots);
+
+    const [srcCommitmentResult, dstCommitmentResult] = await Promise.all([
+      api.createCommitment(source.slots, srcVolume, srcBlinding),
+      api.createCommitment(destination.slots, dstVolume, dstBlinding),
     ]);
 
     setSource((prev) => ({
       ...prev,
       blinding: srcBlinding,
-      commitment: srcCommitment,
+      commitment: srcCommitmentResult.commitment,
     }));
     setDestination((prev) => ({
       ...prev,
       blinding: dstBlinding,
-      commitment: dstCommitment,
+      commitment: dstCommitmentResult.commitment,
     }));
   };
 
@@ -112,6 +120,8 @@ export function Transfer() {
     setProofResult(null);
     setTransferComplete(false);
     setTxDigest(null);
+    setProofTimeMs(null);
+    setTxTimeMs(null);
 
     try {
       const [srcNewBlinding, dstNewBlinding] = await Promise.all([
@@ -119,32 +129,31 @@ export function Transfer() {
         api.generateBlinding(),
       ]);
 
-      let result: TransferResult;
-      if (hasDstCapacityLimit) {
-        result = await api.proveTransferWithCapacity(
-          currentSrcSlots,
-          currentSrcBlinding,
-          srcNewBlinding,
-          currentDstSlots,
-          currentDstBlinding,
-          dstNewBlinding,
-          itemId,
-          amount,
-          dstMaxCapacity,
-          getVolumeRegistryArray()
-        );
-      } else {
-        result = await api.proveTransfer(
-          currentSrcSlots,
-          currentSrcBlinding,
-          srcNewBlinding,
-          currentDstSlots,
-          currentDstBlinding,
-          dstNewBlinding,
-          itemId,
-          amount
-        );
-      }
+      const srcVolume = calculateUsedVolume(currentSrcSlots);
+      const dstVolume = calculateUsedVolume(currentDstSlots);
+      const itemVolume = ITEM_VOLUMES[itemId] ?? 0;
+      const registryRoot = getRegistryRoot();
+      const srcMaxCapacity = mode === 'demo' ? 0 : srcOnChain?.maxCapacity || 0;
+
+      const proofStart = performance.now();
+      const result = await api.proveTransfer(
+        currentSrcSlots,
+        srcVolume,
+        currentSrcBlinding,
+        srcNewBlinding,
+        currentDstSlots,
+        dstVolume,
+        currentDstBlinding,
+        dstNewBlinding,
+        itemId,
+        amount,
+        itemVolume,
+        registryRoot,
+        srcMaxCapacity,
+        dstMaxCapacity
+      );
+      const proofEnd = performance.now();
+      setProofTimeMs(Math.round(proofEnd - proofStart));
 
       setProofResult(result);
 
@@ -168,13 +177,13 @@ export function Transfer() {
         setSource({
           slots: newSourceSlots,
           blinding: srcNewBlinding,
-          commitment: result.src_new_commitment,
+          commitment: result.srcNewCommitment,
         });
 
         setDestination({
           slots: newDstSlots,
           blinding: dstNewBlinding,
-          commitment: result.dst_new_commitment,
+          commitment: result.dstNewCommitment,
         });
 
         setTransferComplete(true);
@@ -203,38 +212,29 @@ export function Transfer() {
   ) => {
     if (!srcOnChain || !dstOnChain || !effectiveAddress) return;
 
+    const txStart = performance.now();
     try {
-      const proofBytes = hexToBytes(result.proof);
-      const srcNewCommitmentBytes = hexToBytes(result.src_new_commitment);
-      const dstNewCommitmentBytes = hexToBytes(result.dst_new_commitment);
+      const srcProofBytes = hexToBytes(result.srcProof.proof);
+      const srcSignalHashBytes = hexToBytes(result.srcProof.public_inputs[0]);
+      const srcNewCommitmentBytes = hexToBytes(result.srcNewCommitment);
+      const dstProofBytes = hexToBytes(result.dstProof.proof);
+      const dstSignalHashBytes = hexToBytes(result.dstProof.public_inputs[0]);
+      const dstNewCommitmentBytes = hexToBytes(result.dstNewCommitment);
 
-      let tx;
-      if (hasDstCapacityLimit) {
-        tx = buildTransferWithCapacityTx(
-          packageId,
-          srcOnChain.id,
-          dstOnChain.id,
-          volumeRegistryId,
-          verifyingKeysId,
-          proofBytes,
-          srcNewCommitmentBytes,
-          dstNewCommitmentBytes,
-          itemId,
-          BigInt(amount)
-        );
-      } else {
-        tx = buildTransferTx(
-          packageId,
-          srcOnChain.id,
-          dstOnChain.id,
-          verifyingKeysId,
-          proofBytes,
-          srcNewCommitmentBytes,
-          dstNewCommitmentBytes,
-          itemId,
-          BigInt(amount)
-        );
-      }
+      const tx = buildTransferTx(
+        packageId,
+        srcOnChain.id,
+        dstOnChain.id,
+        verifyingKeysId,
+        srcProofBytes,
+        srcSignalHashBytes,
+        srcNewCommitmentBytes,
+        dstProofBytes,
+        dstSignalHashBytes,
+        dstNewCommitmentBytes,
+        itemId,
+        BigInt(amount)
+      );
 
       let txResult;
 
@@ -256,6 +256,9 @@ export function Transfer() {
       } else {
         throw new Error('No signer available');
       }
+
+      const txEnd = performance.now();
+      setTxTimeMs(Math.round(txEnd - txStart));
 
       const effects = txResult.effects as { status?: { status: string; error?: string } } | undefined;
       if (effects?.status?.status === 'success') {
@@ -553,7 +556,15 @@ export function Transfer() {
         <div className="col">
           {txDigest && (
             <div className="alert alert-success">
-              <div>[OK] ON-CHAIN TRANSFER SUCCESSFUL</div>
+              <div className="row-between">
+                <span>[OK] ON-CHAIN TRANSFER SUCCESSFUL</span>
+                {(proofTimeMs !== null || txTimeMs !== null) && (
+                  <span className="text-small">
+                    {proofTimeMs !== null && <span className="badge">{proofTimeMs}ms proof</span>}
+                    {txTimeMs !== null && <span className="badge" style={{ marginLeft: '0.5ch' }}>{txTimeMs}ms tx</span>}
+                  </span>
+                )}
+              </div>
               <div className="text-small mt-1">Transfer executed on Sui blockchain with ZK proof verification.</div>
               <code className="text-break text-small">{txDigest}</code>
             </div>
@@ -561,7 +572,10 @@ export function Transfer() {
 
           {transferComplete && !txDigest && (
             <div className="alert alert-success">
-              <div>[OK] TRANSFER COMPLETE!</div>
+              <div className="row-between">
+                <span>[OK] TRANSFER COMPLETE!</span>
+                {proofTimeMs !== null && <span className="badge">{proofTimeMs}ms</span>}
+              </div>
               <div className="text-small">
                 {amount} {ITEM_NAMES[itemId] || `Item #${itemId}`} transferred from source to destination.
               </div>
@@ -571,24 +585,29 @@ export function Transfer() {
           <div className="grid grid-2">
             <div className="card-simple">
               <div className="text-small text-muted mb-1">SRC NEW COMMITMENT</div>
-              <code className="text-break text-small">{proofResult.src_new_commitment}</code>
+              <code className="text-break text-small">{proofResult.srcNewCommitment}</code>
             </div>
             <div className="card-simple">
               <div className="text-small text-muted mb-1">DST NEW COMMITMENT</div>
-              <code className="text-break text-small">{proofResult.dst_new_commitment}</code>
+              <code className="text-break text-small">{proofResult.dstNewCommitment}</code>
             </div>
           </div>
 
-          <ProofResult
-            result={proofResult}
-            title="Transfer Proof"
-            extra={
-              <div className="text-small text-success">
-                [OK] Proved valid transfer of <strong>{amount}</strong>{' '}
-                <strong>{ITEM_NAMES[itemId] || `Item #${itemId}`}</strong> between inventories.
-              </div>
-            }
-          />
+          <div className="text-small text-success mb-2">
+            [OK] Proved valid transfer of <strong>{amount}</strong>{' '}
+            <strong>{ITEM_NAMES[itemId] || `Item #${itemId}`}</strong> between inventories.
+          </div>
+
+          <div className="grid grid-2">
+            <ProofResult
+              result={proofResult.srcProof}
+              title="Source Withdrawal Proof"
+            />
+            <ProofResult
+              result={proofResult.dstProof}
+              title="Destination Deposit Proof"
+            />
+          </div>
         </div>
       )}
 
