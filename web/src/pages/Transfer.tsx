@@ -12,7 +12,7 @@ import {
   type LocalInventoryData,
 } from '../components/OnChainInventorySelector';
 import { useContractAddresses } from '../sui/ContractConfig';
-import { buildTransferTx, hexToBytes } from '../sui/transactions';
+import { buildTransferTx, buildBatchTransfersTx, hexToBytes, type BatchTransferTxOperation } from '../sui/transactions';
 import { ITEM_NAMES, ITEM_VOLUMES, canDeposit, calculateUsedVolume, getRegistryRoot, type InventorySlot } from '../types';
 import * as api from '../api/client';
 import type { TransferProofs } from '../api/client';
@@ -20,6 +20,13 @@ import type { TransferProofs } from '../api/client';
 type TransferResult = TransferProofs;
 import type { OnChainInventory } from '../sui/hooks';
 import { hasLocalSigner, getLocalAddress, signAndExecuteWithLocalSigner, getLocalnetClient } from '../sui/localSigner';
+
+/** Pending transfer for batch mode */
+interface PendingTransfer {
+  id: string;
+  item_id: number;
+  amount: number;
+}
 
 // Helper to fetch fresh inventory state from chain before proof generation
 // This prevents stale nonce errors when inventory was modified elsewhere
@@ -73,7 +80,17 @@ interface InventoryState {
   commitment: string | null;
 }
 
-type Mode = 'demo' | 'onchain';
+type Mode = 'demo' | 'onchain' | 'batch';
+
+/** Batch transfer result */
+interface BatchTransferResult {
+  transfers: TransferResult[];
+  finalSrcSlots: InventorySlot[];
+  finalDstSlots: InventorySlot[];
+  finalSrcBlinding: string;
+  finalDstBlinding: string;
+  proofTimeMs: number;
+}
 
 export function Transfer() {
   const account = useCurrentAccount();
@@ -117,6 +134,10 @@ export function Transfer() {
   const [proofTimeMs, setProofTimeMs] = useState<number | null>(null);
   const [txTimeMs, setTxTimeMs] = useState<number | null>(null);
   const [gasCostMist, setGasCostMist] = useState<bigint | null>(null);
+
+  // Batch mode state
+  const [pendingTransfers, setPendingTransfers] = useState<PendingTransfer[]>([]);
+  const [batchResult, setBatchResult] = useState<BatchTransferResult | null>(null);
 
   const currentSrcSlots = mode === 'demo' ? source.slots : srcLocalData?.slots || [];
   const currentDstSlots = mode === 'demo' ? destination.slots : dstLocalData?.slots || [];
@@ -428,6 +449,222 @@ export function Transfer() {
     setTxDigest(null);
   };
 
+  // Batch mode handlers
+  const addToBatch = () => {
+    const transfer: PendingTransfer = {
+      id: crypto.randomUUID(),
+      item_id: itemId,
+      amount: amount,
+    };
+    setPendingTransfers([...pendingTransfers, transfer]);
+  };
+
+  const removeFromBatch = (id: string) => {
+    setPendingTransfers(pendingTransfers.filter(t => t.id !== id));
+  };
+
+  const clearBatch = () => {
+    setPendingTransfers([]);
+    setBatchResult(null);
+    setError(null);
+    setTxDigest(null);
+  };
+
+  // Preview inventory states after batch
+  const previewBatchInventories = () => {
+    let srcPreview = [...currentSrcSlots];
+    let dstPreview = [...currentDstSlots];
+
+    for (const t of pendingTransfers) {
+      // Update source
+      srcPreview = srcPreview
+        .map(s => s.item_id === t.item_id ? { ...s, quantity: s.quantity - t.amount } : s)
+        .filter(s => s.quantity > 0);
+
+      // Update destination
+      const dstIdx = dstPreview.findIndex(s => s.item_id === t.item_id);
+      if (dstIdx >= 0) {
+        dstPreview = dstPreview.map(s => s.item_id === t.item_id ? { ...s, quantity: s.quantity + t.amount } : s);
+      } else {
+        dstPreview = [...dstPreview, { item_id: t.item_id, quantity: t.amount }];
+      }
+    }
+
+    return { srcPreview, dstPreview };
+  };
+
+  const executeBatchTransfers = async () => {
+    if (!currentSrcBlinding || !currentDstBlinding || !srcOnChain || !dstOnChain ||
+        !effectiveAddress || pendingTransfers.length === 0) {
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    setBatchResult(null);
+    setTxDigest(null);
+    setProofTimeMs(null);
+    setTxTimeMs(null);
+    setGasCostMist(null);
+
+    try {
+      // Fetch fresh inventory states
+      const [fetchedSrc, fetchedDst] = await Promise.all([
+        fetchFreshInventory(srcOnChain.id, useLocalSigner),
+        fetchFreshInventory(dstOnChain.id, useLocalSigner),
+      ]);
+
+      const freshSrcOnChain = fetchedSrc || srcOnChain;
+      const freshDstOnChain = fetchedDst || dstOnChain;
+
+      const registryRoot = getRegistryRoot();
+      const srcMaxCapacity = srcOnChain.maxCapacity;
+      const dstMaxCapacity = dstOnChain.maxCapacity;
+
+      // Pre-compute intermediate states and generate proofs sequentially
+      // (transfers are dependent - each needs previous state)
+      let srcSlots = [...currentSrcSlots];
+      let dstSlots = [...currentDstSlots];
+      let srcBlinding = currentSrcBlinding;
+      let dstBlinding = currentDstBlinding;
+      let srcNonce = freshSrcOnChain.nonce;
+      let dstNonce = freshDstOnChain.nonce;
+
+      const proofStart = performance.now();
+      const transfers: TransferResult[] = [];
+
+      for (const t of pendingTransfers) {
+        const [srcNewBlinding, dstNewBlinding] = await Promise.all([
+          api.generateBlinding(),
+          api.generateBlinding(),
+        ]);
+
+        const srcVolume = calculateUsedVolume(srcSlots);
+        const dstVolume = calculateUsedVolume(dstSlots);
+        const itemVolume = ITEM_VOLUMES[t.item_id] ?? 0;
+
+        const result = await api.proveTransfer(
+          srcSlots, srcVolume, srcBlinding, srcNewBlinding, srcNonce, srcOnChain.id,
+          dstSlots, dstVolume, dstBlinding, dstNewBlinding, dstNonce, dstOnChain.id,
+          t.item_id, t.amount, itemVolume, registryRoot, srcMaxCapacity, dstMaxCapacity
+        );
+
+        transfers.push(result);
+
+        // Update states for next iteration
+        srcSlots = srcSlots
+          .map(s => s.item_id === t.item_id ? { ...s, quantity: s.quantity - t.amount } : s)
+          .filter(s => s.quantity > 0);
+
+        const dstIdx = dstSlots.findIndex(s => s.item_id === t.item_id);
+        if (dstIdx >= 0) {
+          dstSlots = dstSlots.map(s => s.item_id === t.item_id ? { ...s, quantity: s.quantity + t.amount } : s);
+        } else {
+          dstSlots = [...dstSlots, { item_id: t.item_id, quantity: t.amount }];
+        }
+
+        srcBlinding = srcNewBlinding;
+        dstBlinding = dstNewBlinding;
+        srcNonce++;
+        dstNonce++;
+      }
+
+      const proofEnd = performance.now();
+      setProofTimeMs(Math.round(proofEnd - proofStart));
+
+      const batchRes: BatchTransferResult = {
+        transfers,
+        finalSrcSlots: srcSlots,
+        finalDstSlots: dstSlots,
+        finalSrcBlinding: srcBlinding,
+        finalDstBlinding: dstBlinding,
+        proofTimeMs: Math.round(proofEnd - proofStart),
+      };
+      setBatchResult(batchRes);
+
+      // Build PTB with all transfers
+      const txOperations: BatchTransferTxOperation[] = transfers.map((r, i) => ({
+        srcProof: hexToBytes(r.srcProof.proof),
+        srcSignalHash: hexToBytes(r.srcProof.public_inputs[0]),
+        srcNonce: BigInt(r.srcNonce),
+        srcInventoryId: hexToBytes(r.srcInventoryId),
+        srcRegistryRoot: hexToBytes(r.srcRegistryRoot),
+        srcNewCommitment: hexToBytes(r.srcNewCommitment),
+        dstProof: hexToBytes(r.dstProof.proof),
+        dstSignalHash: hexToBytes(r.dstProof.public_inputs[0]),
+        dstNonce: BigInt(r.dstNonce),
+        dstInventoryId: hexToBytes(r.dstInventoryId),
+        dstRegistryRoot: hexToBytes(r.dstRegistryRoot),
+        dstNewCommitment: hexToBytes(r.dstNewCommitment),
+        itemId: pendingTransfers[i].item_id,
+        amount: BigInt(pendingTransfers[i].amount),
+      }));
+
+      const tx = buildBatchTransfersTx(
+        packageId, srcOnChain.id, dstOnChain.id, volumeRegistryId, verifyingKeysId, txOperations
+      );
+
+      // Execute transaction
+      const txStart = performance.now();
+      let txResult;
+
+      if (useLocalSigner && localAddress) {
+        tx.setSender(localAddress);
+        const localClient = getLocalnetClient();
+        txResult = await signAndExecuteWithLocalSigner(tx, localClient);
+      } else if (account) {
+        tx.setSender(account.address);
+        const signedTx = await signTransaction({
+          transaction: tx as unknown as Parameters<typeof signTransaction>[0]['transaction'],
+        });
+        txResult = await client.executeTransactionBlock({
+          transactionBlock: signedTx.bytes,
+          signature: signedTx.signature,
+          options: { showEffects: true },
+        });
+      } else {
+        throw new Error('No signer available');
+      }
+
+      const txEnd = performance.now();
+      setTxTimeMs(Math.round(txEnd - txStart));
+
+      const effects = txResult.effects as {
+        status?: { status: string; error?: string };
+        gasUsed?: { computationCost: string; storageCost: string; storageRebate: string };
+      } | undefined;
+
+      if (effects?.gasUsed) {
+        const computation = BigInt(effects.gasUsed.computationCost);
+        const storage = BigInt(effects.gasUsed.storageCost);
+        const rebate = BigInt(effects.gasUsed.storageRebate);
+        setGasCostMist(computation + storage - rebate);
+      }
+
+      if (effects?.status?.status === 'success') {
+        setTxDigest(txResult.digest);
+        setTransferComplete(true);
+
+        // Update local storage
+        const stored = JSON.parse(localStorage.getItem('inventory-blindings') || '{}');
+        stored[srcOnChain.id] = { blinding: srcBlinding, slots: srcSlots };
+        stored[dstOnChain.id] = { blinding: dstBlinding, slots: dstSlots };
+        localStorage.setItem('inventory-blindings', JSON.stringify(stored));
+
+        setSrcLocalData({ blinding: srcBlinding, slots: srcSlots });
+        setDstLocalData({ blinding: dstBlinding, slots: dstSlots });
+        setPendingTransfers([]);
+      } else {
+        throw new Error('Transaction failed: ' + effects?.status?.error);
+      }
+    } catch (err) {
+      console.error('Batch transfer error:', err);
+      setError(err instanceof Error ? err.message : 'Failed to execute batch transfers');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const initialized = mode === 'demo'
     ? source.blinding && destination.blinding
     : srcLocalData?.blinding && dstLocalData?.blinding && srcOnChain && dstOnChain;
@@ -449,6 +686,8 @@ export function Transfer() {
             setProofResult(null);
             setTransferComplete(false);
             setTxDigest(null);
+            setPendingTransfers([]);
+            setBatchResult(null);
           }}
           className={`btn btn-secondary ${mode === 'demo' ? 'active' : ''}`}
         >
@@ -460,10 +699,24 @@ export function Transfer() {
             setProofResult(null);
             setTransferComplete(false);
             setTxDigest(null);
+            setPendingTransfers([]);
+            setBatchResult(null);
           }}
           className={`btn btn-secondary ${mode === 'onchain' ? 'active' : ''}`}
         >
           [ON-CHAIN]
+        </button>
+        <button
+          onClick={() => {
+            setMode('batch');
+            setProofResult(null);
+            setTransferComplete(false);
+            setTxDigest(null);
+            setBatchResult(null);
+          }}
+          className={`btn btn-secondary ${mode === 'batch' ? 'active' : ''}`}
+        >
+          [BATCH]
         </button>
       </div>
 
@@ -615,19 +868,36 @@ export function Transfer() {
                 </div>
               </div>
 
-              <button
-                onClick={handleTransfer}
-                disabled={
-                  loading ||
-                  !canTransfer ||
-                  !canTransferWithCapacity ||
-                  (mode === 'onchain' && srcOnChain?.id === dstOnChain?.id)
-                }
-                className="btn btn-primary"
-                style={{ width: '100%' }}
-              >
-                {loading ? 'PROCESSING...' : `[${mode === 'onchain' ? 'TRANSFER ON-CHAIN' : 'TRANSFER'} ->]`}
-              </button>
+              {mode === 'batch' ? (
+                <button
+                  onClick={addToBatch}
+                  disabled={
+                    !canTransfer ||
+                    !canTransferWithCapacity ||
+                    !srcOnChain ||
+                    !dstOnChain ||
+                    srcOnChain?.id === dstOnChain?.id
+                  }
+                  className="btn btn-primary"
+                  style={{ width: '100%' }}
+                >
+                  [+ ADD TO BATCH]
+                </button>
+              ) : (
+                <button
+                  onClick={handleTransfer}
+                  disabled={
+                    loading ||
+                    !canTransfer ||
+                    !canTransferWithCapacity ||
+                    (mode === 'onchain' && srcOnChain?.id === dstOnChain?.id)
+                  }
+                  className="btn btn-primary"
+                  style={{ width: '100%' }}
+                >
+                  {loading ? 'PROCESSING...' : `[${mode === 'onchain' ? 'TRANSFER ON-CHAIN' : 'TRANSFER'} ->]`}
+                </button>
+              )}
             </div>
           )}
 
@@ -659,11 +929,115 @@ export function Transfer() {
         </div>
       </div>
 
-      {/* Results */}
-      {loading && <ProofLoading message="Generating transfer proof..." />}
-      {error && <ProofError error={error} onRetry={handleTransfer} />}
+      {/* Batch: Pending Transfers & Preview */}
+      {mode === 'batch' && srcOnChain && dstOnChain && srcLocalData && dstLocalData && (
+        <div className="grid grid-2">
+          <div className="card">
+            <div className="card-header">
+              <div className="card-header-left"></div>
+              <span className="card-title">PENDING TRANSFERS ({pendingTransfers.length})</span>
+              <div className="card-header-right">
+                {pendingTransfers.length > 0 && (
+                  <button onClick={clearBatch} className="btn btn-secondary btn-small">
+                    [CLEAR]
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="card-body">
+              {pendingTransfers.length === 0 ? (
+                <div className="text-muted text-center">No transfers queued</div>
+              ) : (
+                <div className="col">
+                  {pendingTransfers.map((t) => (
+                    <div key={t.id} className="row-between" style={{ padding: '0.5rem', background: 'var(--bg-secondary)', marginBottom: '0.5rem' }}>
+                      <span>
+                        {t.amount} {ITEM_NAMES[t.item_id] || `#${t.item_id}`}
+                      </span>
+                      <button
+                        onClick={() => removeFromBatch(t.id)}
+                        className="btn btn-secondary btn-small"
+                      >
+                        [X]
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
 
-      {proofResult && (
+          <div className="card">
+            <div className="card-header">
+              <div className="card-header-left"></div>
+              <span className="card-title">PREVIEW</span>
+              <div className="card-header-right"></div>
+            </div>
+            <div className="card-body">
+              <div className="grid grid-2">
+                <div>
+                  <div className="text-small text-muted mb-1">SOURCE AFTER</div>
+                  <div className="col text-small">
+                    {previewBatchInventories().srcPreview.map(s => (
+                      <div key={s.item_id}>{ITEM_NAMES[s.item_id] || `#${s.item_id}`}: {s.quantity}</div>
+                    ))}
+                    {previewBatchInventories().srcPreview.length === 0 && <span className="text-muted">Empty</span>}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-small text-muted mb-1">DEST AFTER</div>
+                  <div className="col text-small">
+                    {previewBatchInventories().dstPreview.map(s => (
+                      <div key={s.item_id}>{ITEM_NAMES[s.item_id] || `#${s.item_id}`}: {s.quantity}</div>
+                    ))}
+                    {previewBatchInventories().dstPreview.length === 0 && <span className="text-muted">Empty</span>}
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={executeBatchTransfers}
+                disabled={loading || pendingTransfers.length === 0}
+                className="btn btn-primary mt-2"
+                style={{ width: '100%' }}
+              >
+                {loading
+                  ? 'PROCESSING...'
+                  : `[EXECUTE ${pendingTransfers.length} TRANSFER${pendingTransfers.length !== 1 ? 'S' : ''}]`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Batch Results */}
+      {mode === 'batch' && batchResult && txDigest && (
+        <div className="alert alert-success">
+          <div className="row-between">
+            <span>[OK] BATCH TRANSFER SUCCESSFUL</span>
+            <span className="text-small">
+              <span className="badge">{batchResult.proofTimeMs}ms proofs</span>
+              {txTimeMs !== null && <span className="badge" style={{ marginLeft: '0.5ch' }}>{txTimeMs}ms tx</span>}
+              {gasCostMist !== null && <span className="badge" style={{ marginLeft: '0.5ch' }}>{formatGasCost(gasCostMist)}</span>}
+            </span>
+          </div>
+          <div className="text-small mt-1">
+            {batchResult.transfers.length} transfers executed atomically on Sui blockchain.
+          </div>
+          <code className="text-break text-small">{txDigest}</code>
+        </div>
+      )}
+
+      {/* Results */}
+      {loading && (
+        <ProofLoading
+          message={mode === 'batch'
+            ? `Executing ${pendingTransfers.length} transfers...`
+            : 'Generating transfer proof...'}
+        />
+      )}
+      {error && <ProofError error={error} onRetry={mode === 'batch' ? executeBatchTransfers : handleTransfer} />}
+
+      {mode !== 'batch' && proofResult && (
         <div className="col">
           {txDigest && (
             <div className="alert alert-success">

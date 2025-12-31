@@ -17,7 +17,22 @@ import * as api from '../api/client';
 import type { ProofResult as ProofResultType } from '../types';
 import type { OnChainInventory } from '../sui/hooks';
 
-type Mode = 'demo' | 'onchain';
+type Mode = 'demo' | 'onchain' | 'batch';
+
+/** Pending proof request for batch mode */
+interface PendingProof {
+  id: string;
+  item_id: number;
+  min_quantity: number;
+}
+
+/** Result of a single proof in batch */
+interface BatchProofResult {
+  item_id: number;
+  min_quantity: number;
+  proof: ProofResultType;
+  verified?: boolean;
+}
 
 export function ProveOwnership() {
   const account = useCurrentAccount();
@@ -43,6 +58,10 @@ export function ProveOwnership() {
   const [proofTimeMs, setProofTimeMs] = useState<number | null>(null);
   const [verifyTimeMs, setVerifyTimeMs] = useState<number | null>(null);
 
+  // Batch mode state
+  const [pendingProofs, setPendingProofs] = useState<PendingProof[]>([]);
+  const [batchResults, setBatchResults] = useState<BatchProofResult[] | null>(null);
+
   const currentSlots = mode === 'demo' ? inventory.slots : localData?.slots || [];
   const currentBlinding = mode === 'demo' ? inventory.blinding : localData?.blinding;
 
@@ -57,8 +76,70 @@ export function ProveOwnership() {
     setLocalData(data);
     setProofResult(null);
     setOnChainVerified(null);
+    setPendingProofs([]);
+    setBatchResults(null);
     if (data?.slots.length) {
       setSelectedItemId(data.slots[0].item_id);
+    }
+  };
+
+  // Batch mode handlers
+  const addToBatch = () => {
+    const proof: PendingProof = {
+      id: crypto.randomUUID(),
+      item_id: selectedItemId,
+      min_quantity: minQuantity,
+    };
+    setPendingProofs([...pendingProofs, proof]);
+  };
+
+  const removeFromBatch = (id: string) => {
+    setPendingProofs(pendingProofs.filter(p => p.id !== id));
+  };
+
+  const clearBatch = () => {
+    setPendingProofs([]);
+    setBatchResults(null);
+    setError(null);
+  };
+
+  const executeBatchProofs = async () => {
+    if (!currentBlinding || pendingProofs.length === 0) return;
+
+    setLoading(true);
+    setError(null);
+    setBatchResults(null);
+    setProofTimeMs(null);
+
+    try {
+      const currentVolume = calculateUsedVolume(currentSlots);
+      const proofStart = performance.now();
+
+      // Generate all proofs in parallel
+      const proofPromises = pendingProofs.map(p =>
+        api.proveItemExists(
+          currentSlots,
+          currentVolume,
+          currentBlinding!,
+          p.item_id,
+          p.min_quantity
+        ).then(proof => ({
+          item_id: p.item_id,
+          min_quantity: p.min_quantity,
+          proof,
+        }))
+      );
+
+      const results = await Promise.all(proofPromises);
+      const proofEnd = performance.now();
+      setProofTimeMs(Math.round(proofEnd - proofStart));
+
+      setBatchResults(results);
+      setPendingProofs([]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to generate proofs');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -163,6 +244,8 @@ export function ProveOwnership() {
             setMode('demo');
             setProofResult(null);
             setOnChainVerified(null);
+            setPendingProofs([]);
+            setBatchResults(null);
           }}
           className={`btn btn-secondary ${mode === 'demo' ? 'active' : ''}`}
         >
@@ -173,10 +256,23 @@ export function ProveOwnership() {
             setMode('onchain');
             setProofResult(null);
             setOnChainVerified(null);
+            setPendingProofs([]);
+            setBatchResults(null);
           }}
           className={`btn btn-secondary ${mode === 'onchain' ? 'active' : ''}`}
         >
           [ON-CHAIN]
+        </button>
+        <button
+          onClick={() => {
+            setMode('batch');
+            setProofResult(null);
+            setOnChainVerified(null);
+            setBatchResults(null);
+          }}
+          className={`btn btn-secondary ${mode === 'batch' ? 'active' : ''}`}
+        >
+          [BATCH]
         </button>
       </div>
 
@@ -217,7 +313,7 @@ export function ProveOwnership() {
             <div className="card">
               <div className="card-header">
                 <div className="card-header-left"></div>
-                <span className="card-title">ON-CHAIN INVENTORY</span>
+                <span className="card-title">{mode === 'batch' ? 'SELECT INVENTORY' : 'ON-CHAIN INVENTORY'}</span>
                 <div className="card-header-right"></div>
               </div>
               <div className="card-body">
@@ -274,40 +370,175 @@ export function ProveOwnership() {
                 )}
               </div>
 
-              <button
-                onClick={handleProve}
-                disabled={loading || !canProve}
-                className="btn btn-primary"
-                style={{ width: '100%' }}
-              >
-                {loading
-                  ? 'GENERATING...'
-                  : mode === 'onchain'
-                  ? '[PROVE & VERIFY ON-CHAIN]'
-                  : '[GENERATE PROOF]'}
-              </button>
+              {mode === 'batch' ? (
+                <button
+                  onClick={addToBatch}
+                  disabled={!canProve || !selectedOnChainInventory}
+                  className="btn btn-primary"
+                  style={{ width: '100%' }}
+                >
+                  [+ ADD TO BATCH]
+                </button>
+              ) : (
+                <button
+                  onClick={handleProve}
+                  disabled={loading || !canProve}
+                  className="btn btn-primary"
+                  style={{ width: '100%' }}
+                >
+                  {loading
+                    ? 'GENERATING...'
+                    : mode === 'onchain'
+                    ? '[PROVE & VERIFY ON-CHAIN]'
+                    : '[GENERATE PROOF]'}
+                </button>
+              )}
             </div>
           </div>
+
+          {/* Batch: Pending Proofs */}
+          {mode === 'batch' && selectedOnChainInventory && localData && (
+            <div className="card">
+              <div className="card-header">
+                <div className="card-header-left"></div>
+                <span className="card-title">PENDING PROOFS ({pendingProofs.length})</span>
+                <div className="card-header-right">
+                  {pendingProofs.length > 0 && (
+                    <button onClick={clearBatch} className="btn btn-secondary btn-small">
+                      [CLEAR]
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="card-body">
+                {pendingProofs.length === 0 ? (
+                  <div className="text-muted text-center">No proofs queued</div>
+                ) : (
+                  <div className="col">
+                    {pendingProofs.map((p) => (
+                      <div key={p.id} className="row-between" style={{ padding: '0.5rem', background: 'var(--bg-secondary)', marginBottom: '0.5rem' }}>
+                        <span>
+                          {ITEM_NAMES[p.item_id] || `#${p.item_id}`} &gt;= {p.min_quantity}
+                        </span>
+                        <button
+                          onClick={() => removeFromBatch(p.id)}
+                          className="btn btn-secondary btn-small"
+                        >
+                          [X]
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Right: Results */}
         <div className="col">
-          {/* What will be proven */}
-          <div className="card-simple" style={{ background: 'var(--accent-subdued)' }}>
-            <div className="text-accent mb-1">WHAT THIS PROVES</div>
-            <p className="text-small">
-              "I have at least <strong>{minQuantity}</strong> of{' '}
-              <strong>{ITEM_NAMES[selectedItemId] || `Item #${selectedItemId}`}</strong>"
-            </p>
-            <div className="divider"></div>
-            <div className="text-small text-muted">
-              <div>REVEALED: commitment, item_id, min_quantity</div>
-              <div>HIDDEN: actual qty ({selectedItem?.quantity}), other items, blinding</div>
+          {/* Batch Mode: Execute Button */}
+          {mode === 'batch' && selectedOnChainInventory && localData && (
+            <div className="card">
+              <div className="card-header">
+                <div className="card-header-left"></div>
+                <span className="card-title">EXECUTE BATCH</span>
+                <div className="card-header-right"></div>
+              </div>
+              <div className="card-body">
+                <div className="text-small text-muted mb-2">
+                  {pendingProofs.length === 0
+                    ? 'Add proofs to the batch to execute them in parallel.'
+                    : `${pendingProofs.length} proof${pendingProofs.length !== 1 ? 's' : ''} queued for parallel generation.`}
+                </div>
+                <button
+                  onClick={executeBatchProofs}
+                  disabled={loading || pendingProofs.length === 0 || !currentBlinding}
+                  className="btn btn-primary"
+                  style={{ width: '100%' }}
+                >
+                  {loading
+                    ? 'PROCESSING...'
+                    : `[GENERATE ${pendingProofs.length} PROOF${pendingProofs.length !== 1 ? 'S' : ''} IN PARALLEL]`}
+                </button>
+              </div>
             </div>
-          </div>
+          )}
+
+          {/* Batch Mode: Results */}
+          {mode === 'batch' && batchResults && (
+            <div className="alert alert-success">
+              <div className="row-between">
+                <span>[OK] BATCH PROOFS GENERATED</span>
+                {proofTimeMs !== null && <span className="badge">{proofTimeMs}ms total</span>}
+              </div>
+              <div className="text-small mt-1">
+                {batchResults.length} proofs generated in parallel.
+              </div>
+            </div>
+          )}
+
+          {mode === 'batch' && batchResults && (
+            <div className="card">
+              <div className="card-header">
+                <div className="card-header-left"></div>
+                <span className="card-title">PROOF DETAILS</span>
+                <div className="card-header-right"></div>
+              </div>
+              <div className="card-body">
+                <div className="col">
+                  {batchResults.map((r, i) => (
+                    <div key={i} className="card-simple mb-1">
+                      <div className="row-between">
+                        <span className="text-small text-success">
+                          [OK] {ITEM_NAMES[r.item_id] || `#${r.item_id}`} &gt;= {r.min_quantity}
+                        </span>
+                        <code className="text-small">{r.proof.proof.slice(0, 20)}...</code>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Batch Mode: How It Works */}
+          {mode === 'batch' && !batchResults && !error && selectedOnChainInventory && (
+            <div className="card">
+              <div className="card-header">
+                <div className="card-header-left"></div>
+                <span className="card-title">HOW IT WORKS</span>
+                <div className="card-header-right"></div>
+              </div>
+              <div className="card-body">
+                <div className="col text-small">
+                  <div>[1] Queue multiple item existence proofs</div>
+                  <div>[2] All proofs generated IN PARALLEL</div>
+                  <div>[3] Wall-clock time is O(1) regardless of N proofs</div>
+                  <div>[4] Each proof can be verified independently</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Non-batch: What will be proven */}
+          {mode !== 'batch' && (
+            <div className="card-simple" style={{ background: 'var(--accent-subdued)' }}>
+              <div className="text-accent mb-1">WHAT THIS PROVES</div>
+              <p className="text-small">
+                "I have at least <strong>{minQuantity}</strong> of{' '}
+                <strong>{ITEM_NAMES[selectedItemId] || `Item #${selectedItemId}`}</strong>"
+              </p>
+              <div className="divider"></div>
+              <div className="text-small text-muted">
+                <div>REVEALED: commitment, item_id, min_quantity</div>
+                <div>HIDDEN: actual qty ({selectedItem?.quantity}), other items, blinding</div>
+              </div>
+            </div>
+          )}
 
           {/* On-chain verification result */}
-          {onChainVerified !== null && (
+          {mode !== 'batch' && onChainVerified !== null && (
             <div className={`alert ${onChainVerified ? 'alert-success' : 'alert-error'}`}>
               {onChainVerified ? (
                 <>
@@ -331,10 +562,16 @@ export function ProveOwnership() {
             </div>
           )}
 
-          {loading && <ProofLoading message="Generating item existence proof..." />}
-          {error && <ProofError error={error} onRetry={handleProve} />}
+          {loading && (
+            <ProofLoading
+              message={mode === 'batch'
+                ? `Generating ${pendingProofs.length} proofs in parallel...`
+                : 'Generating item existence proof...'}
+            />
+          )}
+          {error && <ProofError error={error} onRetry={mode === 'batch' ? executeBatchProofs : handleProve} />}
 
-          {proofResult && (
+          {mode !== 'batch' && proofResult && (
             <ProofResult
               result={proofResult}
               title="Ownership Proof Generated"
@@ -351,7 +588,7 @@ export function ProveOwnership() {
             />
           )}
 
-          {!loading && !proofResult && !error && (
+          {mode !== 'batch' && !loading && !proofResult && !error && (
             <div className="card">
               <div className="card-header">
                 <div className="card-header-left"></div>

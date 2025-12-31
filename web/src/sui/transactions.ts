@@ -394,6 +394,73 @@ export function buildBatchOperationsTx(
   return tx;
 }
 
+/** Single transfer operation for batch transaction */
+export interface BatchTransferTxOperation {
+  // Source proof
+  srcProof: Uint8Array;
+  srcSignalHash: Uint8Array;
+  srcNonce: bigint;
+  srcInventoryId: Uint8Array;
+  srcRegistryRoot: Uint8Array;
+  srcNewCommitment: Uint8Array;
+  // Destination proof
+  dstProof: Uint8Array;
+  dstSignalHash: Uint8Array;
+  dstNonce: bigint;
+  dstInventoryId: Uint8Array;
+  dstRegistryRoot: Uint8Array;
+  dstNewCommitment: Uint8Array;
+  // Transfer metadata
+  itemId: number;
+  amount: bigint;
+}
+
+/**
+ * Build a PTB with multiple transfer operations.
+ * Each transfer is between the same source and destination inventories.
+ */
+export function buildBatchTransfersTx(
+  packageId: string,
+  srcInventoryId: string,
+  dstInventoryId: string,
+  registryId: string,
+  verifyingKeysId: string,
+  operations: BatchTransferTxOperation[]
+): Transaction {
+  const tx = new Transaction();
+
+  for (const op of operations) {
+    tx.moveCall({
+      target: `${packageId}::${INVENTORY_MODULE}::transfer`,
+      arguments: [
+        tx.object(srcInventoryId),
+        tx.object(dstInventoryId),
+        tx.object(registryId),
+        tx.object(verifyingKeysId),
+        // Source parameters
+        tx.pure.vector('u8', Array.from(op.srcProof)),
+        tx.pure.vector('u8', Array.from(op.srcSignalHash)),
+        tx.pure.u64(op.srcNonce),
+        tx.pure.vector('u8', Array.from(op.srcInventoryId)),
+        tx.pure.vector('u8', Array.from(op.srcRegistryRoot)),
+        tx.pure.vector('u8', Array.from(op.srcNewCommitment)),
+        // Destination parameters
+        tx.pure.vector('u8', Array.from(op.dstProof)),
+        tx.pure.vector('u8', Array.from(op.dstSignalHash)),
+        tx.pure.u64(op.dstNonce),
+        tx.pure.vector('u8', Array.from(op.dstInventoryId)),
+        tx.pure.vector('u8', Array.from(op.dstRegistryRoot)),
+        tx.pure.vector('u8', Array.from(op.dstNewCommitment)),
+        // Transfer metadata
+        tx.pure.u64(op.itemId),
+        tx.pure.u64(op.amount),
+      ],
+    });
+  }
+
+  return tx;
+}
+
 /**
  * Build transaction to create a volume registry
  */

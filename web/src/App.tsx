@@ -5,7 +5,6 @@ import { CreateInventory } from './pages/CreateInventory';
 import { ProveOwnership } from './pages/ProveOwnership';
 import { DepositWithdraw } from './pages/DepositWithdraw';
 import { Transfer } from './pages/Transfer';
-import { BatchOperations } from './pages/BatchOperations';
 import { OnChain } from './pages/OnChain';
 import { Explorer } from './pages/Explorer';
 
@@ -18,7 +17,6 @@ function App() {
         <Route path="/prove" element={<ProveOwnership />} />
         <Route path="/operations" element={<DepositWithdraw />} />
         <Route path="/transfer" element={<Transfer />} />
-        <Route path="/batch" element={<BatchOperations />} />
         <Route path="/on-chain" element={<OnChain />} />
         <Route path="/explorer" element={<Explorer />} />
       </Routes>

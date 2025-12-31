@@ -9,7 +9,6 @@ const navItems = [
   { path: '/prove', label: 'PROVE' },
   { path: '/operations', label: 'DEPOSIT/WITHDRAW' },
   { path: '/transfer', label: 'TRANSFER' },
-  { path: '/batch', label: 'BATCH' },
   { path: '/on-chain', label: 'ON-CHAIN' },
   { path: '/explorer', label: 'EXPLORER' },
 ];
