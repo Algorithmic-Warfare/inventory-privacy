@@ -59,6 +59,16 @@ async function fetchFreshInventory(
 type Operation = 'deposit' | 'withdraw';
 type Mode = 'demo' | 'onchain';
 
+// Format gas cost in MIST to a readable string
+function formatGasCost(mist: bigint): string {
+  // 1 SUI = 1,000,000,000 MIST
+  const sui = Number(mist) / 1_000_000_000;
+  if (sui < 0.001) {
+    return `${mist.toLocaleString()} MIST`;
+  }
+  return `${sui.toFixed(4)} SUI`;
+}
+
 export function DepositWithdraw() {
   const account = useCurrentAccount();
   const client = useSuiClient();
@@ -89,6 +99,7 @@ export function DepositWithdraw() {
   const [txDigest, setTxDigest] = useState<string | null>(null);
   const [proofTimeMs, setProofTimeMs] = useState<number | null>(null);
   const [txTimeMs, setTxTimeMs] = useState<number | null>(null);
+  const [gasCostMist, setGasCostMist] = useState<bigint | null>(null);
 
   const currentSlots = mode === 'demo' ? inventory.slots : localData?.slots || [];
   const currentBlinding = mode === 'demo' ? inventory.blinding : localData?.blinding;
@@ -126,6 +137,7 @@ export function DepositWithdraw() {
     setTxDigest(null);
     setProofTimeMs(null);
     setTxTimeMs(null);
+    setGasCostMist(null);
 
     try {
       const newBlinding = await api.generateBlinding();
@@ -279,7 +291,23 @@ export function DepositWithdraw() {
       const txEnd = performance.now();
       setTxTimeMs(Math.round(txEnd - txStart));
 
-      const effects = txResult.effects as { status?: { status: string; error?: string } } | undefined;
+      const effects = txResult.effects as {
+        status?: { status: string; error?: string };
+        gasUsed?: {
+          computationCost: string;
+          storageCost: string;
+          storageRebate: string;
+        };
+      } | undefined;
+
+      // Calculate total gas cost in MIST
+      if (effects?.gasUsed) {
+        const computation = BigInt(effects.gasUsed.computationCost);
+        const storage = BigInt(effects.gasUsed.storageCost);
+        const rebate = BigInt(effects.gasUsed.storageRebate);
+        setGasCostMist(computation + storage - rebate);
+      }
+
       if (effects?.status?.status === 'success') {
         setTxDigest(txResult.digest);
 
@@ -534,10 +562,11 @@ export function DepositWithdraw() {
             <div className="alert alert-success">
               <div className="row-between">
                 <span>[OK] ON-CHAIN {operation.toUpperCase()} SUCCESSFUL</span>
-                {(proofTimeMs !== null || txTimeMs !== null) && (
+                {(proofTimeMs !== null || txTimeMs !== null || gasCostMist !== null) && (
                   <span className="text-small">
                     {proofTimeMs !== null && <span className="badge">{proofTimeMs}ms proof</span>}
                     {txTimeMs !== null && <span className="badge" style={{ marginLeft: '0.5ch' }}>{txTimeMs}ms tx</span>}
+                    {gasCostMist !== null && <span className="badge" style={{ marginLeft: '0.5ch' }}>{formatGasCost(gasCostMist)}</span>}
                   </span>
                 )}
               </div>
