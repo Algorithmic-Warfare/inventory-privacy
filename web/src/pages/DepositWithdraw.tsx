@@ -14,7 +14,7 @@ import {
 } from '../components/OnChainInventorySelector';
 import { useContractAddresses } from '../sui/ContractConfig';
 import { buildWithdrawTx, buildDepositTx, hexToBytes } from '../sui/transactions';
-import { ITEM_NAMES, ITEM_VOLUMES, canDeposit, calculateUsedVolume } from '../types';
+import { ITEM_NAMES, ITEM_VOLUMES, canDeposit, calculateUsedVolume, getRegistryRoot } from '../types';
 import * as api from '../api/client';
 import type { StateTransitionResult } from '../types';
 import type { OnChainInventory } from '../sui/hooks';
@@ -95,8 +95,16 @@ export function DepositWithdraw() {
       const newBlinding = await api.generateBlinding();
       const currentVolume = calculateUsedVolume(currentSlots);
       const itemVolume = ITEM_VOLUMES[itemId] ?? 0;
-      // Use a dummy registry root for demo - in production this would come from on-chain
-      const registryRoot = '0x0000000000000000000000000000000000000000000000000000000000000000';
+      // Get registry root hash for volume validation
+      const registryRoot = getRegistryRoot();
+
+      // Get nonce and inventory_id for security binding
+      const currentNonce = mode === 'onchain' && selectedOnChainInventory
+        ? selectedOnChainInventory.nonce
+        : 0;
+      const currentInventoryId = mode === 'onchain' && selectedOnChainInventory
+        ? selectedOnChainInventory.id
+        : '0x0000000000000000000000000000000000000000000000000000000000000000';
 
       let updatedSlots: typeof currentSlots;
 
@@ -112,6 +120,8 @@ export function DepositWithdraw() {
         item_volume: itemVolume,
         registry_root: registryRoot,
         max_capacity: currentMaxCapacity,
+        nonce: currentNonce,
+        inventory_id: currentInventoryId,
         op_type: operation,
       });
       const proofEnd = performance.now();
@@ -152,22 +162,29 @@ export function DepositWithdraw() {
     newBlinding: string,
     updatedSlots: typeof currentSlots
   ) => {
-    if (!selectedOnChainInventory || !effectiveAddress) return;
+    if (!selectedOnChainInventory || !effectiveAddress || !volumeRegistryId) return;
 
     const txStart = performance.now();
     try {
       const proofBytes = hexToBytes(result.proof);
       const signalHashBytes = hexToBytes(result.public_inputs[0]);
       const newCommitmentBytes = hexToBytes(result.new_commitment);
+      // Security parameters from proof result
+      const proofInventoryIdBytes = hexToBytes(result.inventory_id);
+      const proofRegistryRootBytes = hexToBytes(result.registry_root);
 
       let tx;
       if (operation === 'withdraw') {
         tx = buildWithdrawTx(
           packageId,
           selectedOnChainInventory.id,
+          volumeRegistryId,
           verifyingKeysId,
           proofBytes,
           signalHashBytes,
+          BigInt(result.nonce),
+          proofInventoryIdBytes,
+          proofRegistryRootBytes,
           newCommitmentBytes,
           itemId,
           BigInt(amount)
@@ -177,9 +194,13 @@ export function DepositWithdraw() {
         tx = buildDepositTx(
           packageId,
           selectedOnChainInventory.id,
+          volumeRegistryId,
           verifyingKeysId,
           proofBytes,
           signalHashBytes,
+          BigInt(result.nonce),
+          proofInventoryIdBytes,
+          proofRegistryRootBytes,
           newCommitmentBytes,
           itemId,
           BigInt(amount)

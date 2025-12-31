@@ -44,6 +44,8 @@ fn test_state_transition_deposit_full_proof() {
     let new_volume = 150 * item_volume;
     let registry_root = Fr::from(99999u64);
     let max_capacity = 10000u64;
+    let nonce = 0u64;
+    let inventory_id = Fr::from(12345678u64);
 
     // Create proof circuit
     let circuit = StateTransitionCircuit::new(
@@ -62,6 +64,8 @@ fn test_state_transition_deposit_full_proof() {
         item_volume,
         registry_root,
         max_capacity,
+        nonce,
+        inventory_id,
         config.clone(),
     );
 
@@ -70,8 +74,8 @@ fn test_state_transition_deposit_full_proof() {
     // Generate proof
     let groth_proof = Groth16::<Bn254>::prove(&pk, circuit, &mut rng).unwrap();
 
-    // Verify proof (single public input: signal_hash)
-    let public_inputs = vec![signal_hash];
+    // Verify proof with all 4 public inputs: signal_hash, nonce, inventory_id, registry_root
+    let public_inputs = vec![signal_hash, Fr::from(nonce), inventory_id, registry_root];
     let valid = Groth16::<Bn254>::verify(&vk, &public_inputs, &groth_proof).unwrap();
     assert!(valid, "StateTransition deposit proof verification failed");
 }
@@ -106,6 +110,8 @@ fn test_state_transition_withdraw_full_proof() {
     let new_volume = 70 * item_volume;
     let registry_root = Fr::from(99999u64);
     let max_capacity = 10000u64;
+    let nonce = 5u64;
+    let inventory_id = Fr::from(12345678u64);
 
     let circuit = StateTransitionCircuit::new(
         old_root,
@@ -123,6 +129,8 @@ fn test_state_transition_withdraw_full_proof() {
         item_volume,
         registry_root,
         max_capacity,
+        nonce,
+        inventory_id,
         config.clone(),
     );
 
@@ -130,7 +138,8 @@ fn test_state_transition_withdraw_full_proof() {
 
     let groth_proof = Groth16::<Bn254>::prove(&pk, circuit, &mut rng).unwrap();
 
-    let public_inputs = vec![signal_hash];
+    // Verify proof with all 4 public inputs: signal_hash, nonce, inventory_id, registry_root
+    let public_inputs = vec![signal_hash, Fr::from(nonce), inventory_id, registry_root];
     let valid = Groth16::<Bn254>::verify(&vk, &public_inputs, &groth_proof).unwrap();
     assert!(valid, "StateTransition withdraw proof verification failed");
 }

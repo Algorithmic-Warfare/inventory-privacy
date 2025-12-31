@@ -30,6 +30,12 @@ export interface ProofResult {
 export interface StateTransitionResult extends ProofResult {
   new_commitment: string;
   new_volume: number;
+  /** Nonce used in this proof (for on-chain verification) */
+  nonce: number;
+  /** Inventory ID used in this proof (for on-chain verification) */
+  inventory_id: string;
+  /** Registry root used in this proof (for on-chain verification) */
+  registry_root: string;
 }
 
 // Legacy aliases for backward compatibility
@@ -172,7 +178,8 @@ export function getVolumeRegistryArray(): number[] {
   ];
 }
 
-// Get registry root hash (dummy for demo - in production from on-chain)
+// Get registry root hash - Poseidon hash of the volume registry values
+// This must match what's deployed on-chain in the VolumeRegistry object
 export function getRegistryRoot(): string {
-  return '0x0000000000000000000000000000000000000000000000000000000000000000';
+  return '0xb08a402d53183775208f9f8772791a51f6af5f7b648203b9bef158feb89b1815';
 }

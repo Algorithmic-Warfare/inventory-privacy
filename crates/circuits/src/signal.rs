@@ -1,7 +1,14 @@
 //! Signal hash for collapsing public inputs.
 //!
 //! Sui has a limit of 8 public inputs for ZK proofs. The signal hash pattern
-//! compresses all public inputs into a single hash that is verified on-chain.
+//! compresses most inputs into a single hash, with critical context values
+//! as separate public inputs for on-chain verification.
+//!
+//! Public inputs:
+//! - signal_hash (binding all parameters)
+//! - nonce (for replay protection - verified on-chain)
+//! - inventory_id (for cross-inventory protection - verified on-chain)
+//! - registry_root (for volume validation - verified against VolumeRegistry)
 //!
 //! signal_hash = Poseidon(
 //!     old_commitment,
@@ -10,7 +17,9 @@
 //!     max_capacity,
 //!     item_id,
 //!     amount,
-//!     op_type
+//!     op_type,
+//!     nonce,           // NEW: replay protection
+//!     inventory_id     // NEW: cross-inventory protection
 //! )
 
 use ark_ff::PrimeField;
@@ -56,6 +65,10 @@ pub struct SignalInputs<F: PrimeField> {
     pub amount: u64,
     /// Operation type (deposit/withdraw)
     pub op_type: OpType,
+    /// Current nonce from on-chain inventory (replay protection)
+    pub nonce: u64,
+    /// Inventory object ID as field element (cross-inventory protection)
+    pub inventory_id: F,
 }
 
 impl<F: PrimeField + Absorb> SignalInputs<F> {
@@ -69,6 +82,8 @@ impl<F: PrimeField + Absorb> SignalInputs<F> {
             F::from(self.item_id),
             F::from(self.amount),
             self.op_type.to_field(),
+            F::from(self.nonce),
+            self.inventory_id,
         ];
 
         let mut sponge = PoseidonSponge::new(config);
@@ -94,10 +109,15 @@ pub struct SignalInputsVar<F: PrimeField> {
     pub amount: FpVar<F>,
     /// Operation type
     pub op_type: FpVar<F>,
+    /// Nonce (replay protection)
+    pub nonce: FpVar<F>,
+    /// Inventory ID (cross-inventory protection)
+    pub inventory_id: FpVar<F>,
 }
 
 impl<F: PrimeField> SignalInputsVar<F> {
     /// Create signal inputs from individual field variables.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         old_commitment: FpVar<F>,
         new_commitment: FpVar<F>,
@@ -106,6 +126,8 @@ impl<F: PrimeField> SignalInputsVar<F> {
         item_id: FpVar<F>,
         amount: FpVar<F>,
         op_type: FpVar<F>,
+        nonce: FpVar<F>,
+        inventory_id: FpVar<F>,
     ) -> Self {
         Self {
             old_commitment,
@@ -115,6 +137,8 @@ impl<F: PrimeField> SignalInputsVar<F> {
             item_id,
             amount,
             op_type,
+            nonce,
+            inventory_id,
         }
     }
 
@@ -132,6 +156,8 @@ impl<F: PrimeField> SignalInputsVar<F> {
             self.item_id.clone(),
             self.amount.clone(),
             self.op_type.clone(),
+            self.nonce.clone(),
+            self.inventory_id.clone(),
         ];
 
         let mut sponge = PoseidonSpongeVar::new(cs, config);
@@ -142,6 +168,7 @@ impl<F: PrimeField> SignalInputsVar<F> {
 }
 
 /// Compute signal hash from raw field elements.
+#[allow(clippy::too_many_arguments)]
 pub fn compute_signal_hash<F: PrimeField + Absorb>(
     old_commitment: F,
     new_commitment: F,
@@ -150,6 +177,8 @@ pub fn compute_signal_hash<F: PrimeField + Absorb>(
     item_id: u64,
     amount: u64,
     op_type: OpType,
+    nonce: u64,
+    inventory_id: F,
     config: &PoseidonConfig<F>,
 ) -> F {
     let inputs = SignalInputs {
@@ -160,11 +189,14 @@ pub fn compute_signal_hash<F: PrimeField + Absorb>(
         item_id,
         amount,
         op_type,
+        nonce,
+        inventory_id,
     };
     inputs.compute_hash(config)
 }
 
 /// Compute signal hash in-circuit.
+#[allow(clippy::too_many_arguments)]
 pub fn compute_signal_hash_var<F: PrimeField>(
     cs: ConstraintSystemRef<F>,
     old_commitment: &FpVar<F>,
@@ -174,6 +206,8 @@ pub fn compute_signal_hash_var<F: PrimeField>(
     item_id: &FpVar<F>,
     amount: &FpVar<F>,
     op_type: &FpVar<F>,
+    nonce: &FpVar<F>,
+    inventory_id: &FpVar<F>,
     config: &PoseidonConfig<F>,
 ) -> Result<FpVar<F>, SynthesisError> {
     let inputs = SignalInputsVar::new(
@@ -184,6 +218,8 @@ pub fn compute_signal_hash_var<F: PrimeField>(
         item_id.clone(),
         amount.clone(),
         op_type.clone(),
+        nonce.clone(),
+        inventory_id.clone(),
     );
     inputs.compute_hash(cs, config)
 }
@@ -207,6 +243,8 @@ mod tests {
             42,                // item_id
             50,                // amount
             OpType::Deposit,
+            0,                 // nonce
+            Fr::from(999u64),  // inventory_id
             &config,
         );
 
@@ -218,10 +256,78 @@ mod tests {
             42,
             50,
             OpType::Deposit,
+            0,
+            Fr::from(999u64),
             &config,
         );
 
         assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_different_nonce_different_hash() {
+        let config = poseidon_config::<Fr>();
+
+        let hash1 = compute_signal_hash(
+            Fr::from(100u64),
+            Fr::from(200u64),
+            Fr::from(300u64),
+            1000,
+            42,
+            50,
+            OpType::Deposit,
+            0,  // nonce = 0
+            Fr::from(999u64),
+            &config,
+        );
+
+        let hash2 = compute_signal_hash(
+            Fr::from(100u64),
+            Fr::from(200u64),
+            Fr::from(300u64),
+            1000,
+            42,
+            50,
+            OpType::Deposit,
+            1,  // nonce = 1 (different!)
+            Fr::from(999u64),
+            &config,
+        );
+
+        assert_ne!(hash1, hash2, "Different nonces must produce different hashes (replay protection)");
+    }
+
+    #[test]
+    fn test_different_inventory_id_different_hash() {
+        let config = poseidon_config::<Fr>();
+
+        let hash1 = compute_signal_hash(
+            Fr::from(100u64),
+            Fr::from(200u64),
+            Fr::from(300u64),
+            1000,
+            42,
+            50,
+            OpType::Deposit,
+            0,
+            Fr::from(111u64),  // inventory A
+            &config,
+        );
+
+        let hash2 = compute_signal_hash(
+            Fr::from(100u64),
+            Fr::from(200u64),
+            Fr::from(300u64),
+            1000,
+            42,
+            50,
+            OpType::Deposit,
+            0,
+            Fr::from(222u64),  // inventory B (different!)
+            &config,
+        );
+
+        assert_ne!(hash1, hash2, "Different inventory IDs must produce different hashes (cross-inventory protection)");
     }
 
     #[test]
@@ -236,6 +342,8 @@ mod tests {
             42,
             50,
             OpType::Deposit,
+            0,
+            Fr::from(999u64),
             &config,
         );
 
@@ -247,6 +355,8 @@ mod tests {
             42,
             50,
             OpType::Withdraw,
+            0,
+            Fr::from(999u64),
             &config,
         );
 
@@ -264,6 +374,8 @@ mod tests {
         let item_id = 42u64;
         let amount = 50u64;
         let op_type = OpType::Deposit;
+        let nonce = 5u64;
+        let inventory_id = Fr::from(999u64);
 
         // Compute native
         let native_hash = compute_signal_hash(
@@ -274,6 +386,8 @@ mod tests {
             item_id,
             amount,
             op_type,
+            nonce,
+            inventory_id,
             &config,
         );
 
@@ -287,6 +401,8 @@ mod tests {
         let item_id_var = FpVar::new_witness(cs.clone(), || Ok(Fr::from(item_id))).unwrap();
         let amount_var = FpVar::new_witness(cs.clone(), || Ok(Fr::from(amount))).unwrap();
         let op_type_var = FpVar::new_witness(cs.clone(), || Ok(op_type.to_field::<Fr>())).unwrap();
+        let nonce_var = FpVar::new_witness(cs.clone(), || Ok(Fr::from(nonce))).unwrap();
+        let inventory_id_var = FpVar::new_witness(cs.clone(), || Ok(inventory_id)).unwrap();
 
         let circuit_hash = compute_signal_hash_var(
             cs.clone(),
@@ -297,6 +413,8 @@ mod tests {
             &item_id_var,
             &amount_var,
             &op_type_var,
+            &nonce_var,
+            &inventory_id_var,
             &config,
         )
         .unwrap();

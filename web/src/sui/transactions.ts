@@ -56,13 +56,18 @@ export function buildVerifyItemExistsTx(
 
 /**
  * Build transaction to withdraw items (SMT-based with signal hash)
+ * Now includes nonce, inventoryId, and registryRoot for security
  */
 export function buildWithdrawTx(
   packageId: string,
   inventoryId: string,
+  registryId: string,
   verifyingKeysId: string,
   proof: Uint8Array,
   signalHash: Uint8Array,
+  proofNonce: bigint,
+  proofInventoryId: Uint8Array,
+  proofRegistryRoot: Uint8Array,
   newCommitment: Uint8Array,
   itemId: number,
   amount: bigint
@@ -73,9 +78,13 @@ export function buildWithdrawTx(
     target: `${packageId}::${INVENTORY_MODULE}::withdraw`,
     arguments: [
       tx.object(inventoryId),
+      tx.object(registryId),
       tx.object(verifyingKeysId),
       tx.pure.vector('u8', Array.from(proof)),
       tx.pure.vector('u8', Array.from(signalHash)),
+      tx.pure.u64(proofNonce),
+      tx.pure.vector('u8', Array.from(proofInventoryId)),
+      tx.pure.vector('u8', Array.from(proofRegistryRoot)),
       tx.pure.vector('u8', Array.from(newCommitment)),
       tx.pure.u64(itemId),
       tx.pure.u64(amount),
@@ -87,13 +96,18 @@ export function buildWithdrawTx(
 
 /**
  * Build transaction to deposit items (SMT-based with signal hash)
+ * Now includes nonce, inventoryId, and registryRoot for security
  */
 export function buildDepositTx(
   packageId: string,
   inventoryId: string,
+  registryId: string,
   verifyingKeysId: string,
   proof: Uint8Array,
   signalHash: Uint8Array,
+  proofNonce: bigint,
+  proofInventoryId: Uint8Array,
+  proofRegistryRoot: Uint8Array,
   newCommitment: Uint8Array,
   itemId: number,
   amount: bigint
@@ -104,9 +118,13 @@ export function buildDepositTx(
     target: `${packageId}::${INVENTORY_MODULE}::deposit`,
     arguments: [
       tx.object(inventoryId),
+      tx.object(registryId),
       tx.object(verifyingKeysId),
       tx.pure.vector('u8', Array.from(proof)),
       tx.pure.vector('u8', Array.from(signalHash)),
+      tx.pure.u64(proofNonce),
+      tx.pure.vector('u8', Array.from(proofInventoryId)),
+      tx.pure.vector('u8', Array.from(proofRegistryRoot)),
       tx.pure.vector('u8', Array.from(newCommitment)),
       tx.pure.u64(itemId),
       tx.pure.u64(amount),
@@ -118,18 +136,29 @@ export function buildDepositTx(
 
 /**
  * Build transaction to transfer items between inventories (SMT-based with signal hashes)
+ * Now includes nonce, inventoryId, and registryRoot for both source and destination
  */
 export function buildTransferTx(
   packageId: string,
   srcInventoryId: string,
   dstInventoryId: string,
+  registryId: string,
   verifyingKeysId: string,
+  // Source proof parameters
   srcProof: Uint8Array,
   srcSignalHash: Uint8Array,
+  srcNonce: bigint,
+  srcProofInventoryId: Uint8Array,
+  srcRegistryRoot: Uint8Array,
   srcNewCommitment: Uint8Array,
+  // Destination proof parameters
   dstProof: Uint8Array,
   dstSignalHash: Uint8Array,
+  dstNonce: bigint,
+  dstProofInventoryId: Uint8Array,
+  dstRegistryRoot: Uint8Array,
   dstNewCommitment: Uint8Array,
+  // Transfer metadata
   itemId: number,
   amount: bigint
 ): Transaction {
@@ -140,13 +169,23 @@ export function buildTransferTx(
     arguments: [
       tx.object(srcInventoryId),
       tx.object(dstInventoryId),
+      tx.object(registryId),
       tx.object(verifyingKeysId),
+      // Source (withdraw) parameters
       tx.pure.vector('u8', Array.from(srcProof)),
       tx.pure.vector('u8', Array.from(srcSignalHash)),
+      tx.pure.u64(srcNonce),
+      tx.pure.vector('u8', Array.from(srcProofInventoryId)),
+      tx.pure.vector('u8', Array.from(srcRegistryRoot)),
       tx.pure.vector('u8', Array.from(srcNewCommitment)),
+      // Destination (deposit) parameters
       tx.pure.vector('u8', Array.from(dstProof)),
       tx.pure.vector('u8', Array.from(dstSignalHash)),
+      tx.pure.u64(dstNonce),
+      tx.pure.vector('u8', Array.from(dstProofInventoryId)),
+      tx.pure.vector('u8', Array.from(dstRegistryRoot)),
       tx.pure.vector('u8', Array.from(dstNewCommitment)),
+      // Transfer metadata
       tx.pure.u64(itemId),
       tx.pure.u64(amount),
     ],

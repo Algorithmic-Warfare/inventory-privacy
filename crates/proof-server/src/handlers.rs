@@ -55,7 +55,7 @@ fn parse_inventory_state(items: &[ItemRequest], volume: u64, blinding: Fr) -> In
     }
 }
 
-/// Parse hex string to Fr
+/// Parse hex string to Fr (little-endian, for blinding factors etc)
 fn parse_fr(hex: &str) -> Result<Fr, String> {
     let bytes = hex::decode(hex.trim_start_matches("0x"))
         .map_err(|e| format!("Invalid hex: {}", e))?;
@@ -70,10 +70,35 @@ fn parse_fr(hex: &str) -> Result<Fr, String> {
     Ok(Fr::from_le_bytes_mod_order(&arr))
 }
 
-/// Serialize Fr to hex string
+/// Parse hex string to Fr (big-endian, for Sui object IDs)
+/// Sui object IDs are big-endian, so we reverse bytes before interpreting as LE field element
+fn parse_fr_be(hex: &str) -> Result<Fr, String> {
+    let bytes = hex::decode(hex.trim_start_matches("0x"))
+        .map_err(|e| format!("Invalid hex: {}", e))?;
+
+    if bytes.len() != 32 {
+        return Err("Field element must be 32 bytes".to_string());
+    }
+
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&bytes);
+    arr.reverse(); // Convert BE to LE
+
+    Ok(Fr::from_le_bytes_mod_order(&arr))
+}
+
+/// Serialize Fr to hex string (little-endian)
 fn serialize_fr(f: &Fr) -> String {
     let mut bytes = Vec::new();
     f.serialize_compressed(&mut bytes).unwrap();
+    format!("0x{}", hex::encode(bytes))
+}
+
+/// Serialize Fr to hex string (big-endian, for Sui object IDs)
+fn serialize_fr_be(f: &Fr) -> String {
+    let mut bytes = Vec::new();
+    f.serialize_compressed(&mut bytes).unwrap();
+    bytes.reverse(); // Convert LE to BE
     format!("0x{}", hex::encode(bytes))
 }
 
@@ -112,6 +137,10 @@ pub struct StateTransitionRequest {
     pub registry_root: String,
     /// Maximum allowed capacity
     pub max_capacity: u64,
+    /// Current nonce from on-chain inventory (for replay protection)
+    pub nonce: u64,
+    /// Inventory object ID as hex string (for cross-inventory protection)
+    pub inventory_id: String,
     /// Operation type: "deposit" or "withdraw"
     pub op_type: String,
 }
@@ -122,6 +151,12 @@ pub struct StateTransitionResponse {
     pub public_inputs: Vec<String>,
     pub new_commitment: String,
     pub new_volume: u64,
+    /// Nonce used in this proof (for on-chain verification)
+    pub nonce: u64,
+    /// Inventory ID used in this proof (for on-chain verification)
+    pub inventory_id: String,
+    /// Registry root used in this proof (for on-chain verification)
+    pub registry_root: String,
 }
 
 pub async fn prove_state_transition(
@@ -140,6 +175,12 @@ pub async fn prove_state_transition(
 
     let registry_root = match parse_fr(&req.registry_root) {
         Ok(r) => r,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
+    };
+
+    // Parse inventory_id - interpreted as LE field element (with modular reduction if needed)
+    let inventory_id = match parse_fr(&req.inventory_id) {
+        Ok(id) => id,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
     };
 
@@ -164,6 +205,8 @@ pub async fn prove_state_transition(
         req.item_volume,
         registry_root,
         req.max_capacity,
+        req.nonce,
+        inventory_id,
         op_type,
     ) {
         Ok(result) => {
@@ -177,6 +220,11 @@ pub async fn prove_state_transition(
                     .collect(),
                 new_commitment: serialize_fr(&result.new_commitment),
                 new_volume: result.new_state.current_volume,
+                nonce: result.nonce,
+                // Return serialized field element bytes - this matches what the circuit used
+                // after modular reduction (for object IDs exceeding BN254 field order)
+                inventory_id: serialize_fr(&inventory_id),
+                registry_root: serialize_fr(&result.registry_root),
             };
             (StatusCode::OK, Json(response)).into_response()
         }

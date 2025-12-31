@@ -199,9 +199,28 @@ pub struct StateTransitionResult {
     pub proof: ProofWithInputs,
     pub new_state: InventoryState,
     pub new_commitment: Fr,
+    /// Nonce used in this proof (for on-chain verification)
+    pub nonce: u64,
+    /// Inventory ID used in this proof (for on-chain verification)
+    pub inventory_id: Fr,
+    /// Registry root used in this proof (for on-chain verification)
+    pub registry_root: Fr,
 }
 
 /// Generate proof for StateTransitionCircuit (deposit or withdraw)
+///
+/// # Arguments
+/// * `pk` - Proving key for StateTransitionCircuit
+/// * `old_state` - Current inventory state
+/// * `new_blinding` - New blinding factor for the updated commitment
+/// * `item_id` - Item being deposited/withdrawn
+/// * `amount` - Quantity being deposited/withdrawn
+/// * `item_volume` - Volume per unit of this item type
+/// * `registry_root` - VolumeRegistry Poseidon hash (must match on-chain)
+/// * `max_capacity` - Maximum allowed volume (0 = unlimited)
+/// * `nonce` - Current inventory nonce (must match on-chain, for replay protection)
+/// * `inventory_id` - Inventory object ID as field element (must match on-chain)
+/// * `op_type` - Deposit or Withdraw
 #[allow(clippy::too_many_arguments)]
 pub fn prove_state_transition(
     pk: &ProvingKey<Bn254>,
@@ -212,6 +231,8 @@ pub fn prove_state_transition(
     item_volume: u64,
     registry_root: Fr,
     max_capacity: u64,
+    nonce: u64,
+    inventory_id: Fr,
     op_type: OpType,
 ) -> Result<StateTransitionResult, ProveError> {
     let config = Arc::new(poseidon_config::<Fr>());
@@ -263,7 +284,7 @@ pub fn prove_state_transition(
 
     let new_commitment = new_state.commitment();
 
-    // Create circuit
+    // Create circuit with all security parameters
     let circuit = StateTransitionCircuit::new(
         old_state.tree.root(),
         old_state.current_volume,
@@ -280,6 +301,8 @@ pub fn prove_state_transition(
         item_volume,
         registry_root,
         max_capacity,
+        nonce,
+        inventory_id,
         config,
     );
 
@@ -290,13 +313,18 @@ pub fn prove_state_transition(
     let proof = Groth16::<Bn254>::prove(pk, circuit, &mut rng)
         .map_err(|e| ProveError::ProofGeneration(e.to_string()))?;
 
+    // Return all 4 public inputs for on-chain verification
+    // Order: signal_hash, nonce, inventory_id, registry_root
     Ok(StateTransitionResult {
         proof: ProofWithInputs {
             proof,
-            public_inputs: vec![signal_hash],
+            public_inputs: vec![signal_hash, Fr::from(nonce), inventory_id, registry_root],
         },
         new_state,
         new_commitment,
+        nonce,
+        inventory_id,
+        registry_root,
     })
 }
 
@@ -474,6 +502,8 @@ mod tests {
 
         // Simple registry root (would normally come from on-chain registry)
         let registry_root = Fr::from(99999u64);
+        let nonce = 0u64;
+        let inventory_id = Fr::from(12345678u64);
 
         let result = prove_state_transition(
             &keys.proving_key,
@@ -484,13 +514,19 @@ mod tests {
             10,   // item_volume
             registry_root,
             1000, // max_capacity
+            nonce,
+            inventory_id,
             OpType::Deposit,
         );
 
         assert!(result.is_ok());
         let res = result.unwrap();
-        assert_eq!(res.proof.public_inputs.len(), 1);
+        // Now 4 public inputs: signal_hash, nonce, inventory_id, registry_root
+        assert_eq!(res.proof.public_inputs.len(), 4);
         assert_eq!(res.new_state.current_volume, 50); // 5 * 10
+        assert_eq!(res.nonce, nonce);
+        assert_eq!(res.inventory_id, inventory_id);
+        assert_eq!(res.registry_root, registry_root);
     }
 
     #[test]
@@ -507,8 +543,10 @@ mod tests {
         state.tree.update(1, 100);
         state.current_volume = 1000; // 100 items * 10 volume each
 
-        // Registry root
+        // Registry root and security parameters
         let registry_root = Fr::from(99999u64);
+        let nonce = 5u64;
+        let inventory_id = Fr::from(12345678u64);
 
         let result = prove_state_transition(
             &keys.proving_key,
@@ -519,11 +557,14 @@ mod tests {
             10,   // item_volume
             registry_root,
             1000, // max_capacity
+            nonce,
+            inventory_id,
             OpType::Withdraw,
         );
 
         assert!(result.is_ok());
         let res = result.unwrap();
+        assert_eq!(res.proof.public_inputs.len(), 4);
         assert_eq!(res.new_state.current_volume, 700); // 1000 - 30*10
         assert_eq!(res.new_state.get_quantity(1), 70); // 100 - 30
     }

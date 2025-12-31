@@ -7,6 +7,7 @@
 
 // Core modules
 pub mod commitment; // Poseidon config (shared)
+pub mod range_check; // Range checks for underflow prevention
 pub mod signal;
 pub mod smt;
 pub mod smt_commitment;

@@ -183,6 +183,8 @@ fn run_timing_benchmarks(keys_path: &Path) {
             1,                  // item_volume
             Fr::from(0u64),     // registry_root
             1000,               // max_capacity
+            0,                  // nonce
+            Fr::from(12345u64), // inventory_id
             OpType::Deposit,    // op_type
         );
         times.push(start.elapsed().as_micros());

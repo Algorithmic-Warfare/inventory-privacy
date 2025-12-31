@@ -57,6 +57,10 @@ export interface StateTransitionRequest {
   item_volume: number;
   registry_root: string;
   max_capacity: number;
+  /** Current nonce from on-chain inventory (for replay protection) */
+  nonce: number;
+  /** Inventory object ID as hex string (for cross-inventory protection) */
+  inventory_id: string;
   op_type: 'deposit' | 'withdraw';
 }
 
@@ -81,7 +85,9 @@ export async function proveDeposit(
   amount: number,
   itemVolume: number,
   registryRoot: string,
-  maxCapacity: number
+  maxCapacity: number,
+  nonce: number,
+  inventoryId: string
 ): Promise<StateTransitionResult> {
   return proveStateTransition({
     inventory,
@@ -93,6 +99,8 @@ export async function proveDeposit(
     item_volume: itemVolume,
     registry_root: registryRoot,
     max_capacity: maxCapacity,
+    nonce,
+    inventory_id: inventoryId,
     op_type: 'deposit',
   });
 }
@@ -107,7 +115,9 @@ export async function proveWithdraw(
   amount: number,
   itemVolume: number,
   registryRoot: string,
-  maxCapacity: number
+  maxCapacity: number,
+  nonce: number,
+  inventoryId: string
 ): Promise<StateTransitionResult> {
   return proveStateTransition({
     inventory,
@@ -119,6 +129,8 @@ export async function proveWithdraw(
     item_volume: itemVolume,
     registry_root: registryRoot,
     max_capacity: maxCapacity,
+    nonce,
+    inventory_id: inventoryId,
     op_type: 'withdraw',
   });
 }
@@ -173,9 +185,21 @@ export interface TransferProofs {
   srcProof: ProofResult;
   srcNewCommitment: string;
   srcNewVolume: number;
+  /** Source nonce used in proof */
+  srcNonce: number;
+  /** Source inventory_id used in proof */
+  srcInventoryId: string;
+  /** Source registry_root used in proof */
+  srcRegistryRoot: string;
   dstProof: ProofResult;
   dstNewCommitment: string;
   dstNewVolume: number;
+  /** Destination nonce used in proof */
+  dstNonce: number;
+  /** Destination inventory_id used in proof */
+  dstInventoryId: string;
+  /** Destination registry_root used in proof */
+  dstRegistryRoot: string;
 }
 
 export async function proveTransfer(
@@ -183,10 +207,14 @@ export async function proveTransfer(
   srcCurrentVolume: number,
   srcOldBlinding: string,
   srcNewBlinding: string,
+  srcNonce: number,
+  srcInventoryId: string,
   dstInventory: InventoryItem[],
   dstCurrentVolume: number,
   dstOldBlinding: string,
   dstNewBlinding: string,
+  dstNonce: number,
+  dstInventoryId: string,
   itemId: number,
   amount: number,
   itemVolume: number,
@@ -204,7 +232,9 @@ export async function proveTransfer(
     amount,
     itemVolume,
     registryRoot,
-    srcMaxCapacity
+    srcMaxCapacity,
+    srcNonce,
+    srcInventoryId
   );
 
   // Generate deposit proof to destination
@@ -217,7 +247,9 @@ export async function proveTransfer(
     amount,
     itemVolume,
     registryRoot,
-    dstMaxCapacity
+    dstMaxCapacity,
+    dstNonce,
+    dstInventoryId
   );
 
   return {
@@ -227,11 +259,17 @@ export async function proveTransfer(
     },
     srcNewCommitment: srcResult.new_commitment,
     srcNewVolume: srcResult.new_volume,
+    srcNonce: srcResult.nonce,
+    srcInventoryId: srcResult.inventory_id,
+    srcRegistryRoot: srcResult.registry_root,
     dstProof: {
       proof: dstResult.proof,
       public_inputs: dstResult.public_inputs,
     },
     dstNewCommitment: dstResult.new_commitment,
     dstNewVolume: dstResult.new_volume,
+    dstNonce: dstResult.nonce,
+    dstInventoryId: dstResult.inventory_id,
+    dstRegistryRoot: dstResult.registry_root,
   };
 }

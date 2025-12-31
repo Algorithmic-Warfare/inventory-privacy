@@ -3,7 +3,11 @@
 //! This circuit proves a valid deposit or withdrawal with capacity checking.
 //! It combines the functionality of the old deposit, withdraw, and capacity circuits.
 //!
-//! Public input: signal_hash (single field element)
+//! Public inputs:
+//! - signal_hash: Poseidon hash binding all operation parameters
+//! - nonce: Replay protection (verified on-chain against inventory.nonce)
+//! - inventory_id: Cross-inventory protection (verified on-chain)
+//! - registry_root: Volume registry commitment (verified against VolumeRegistry)
 //!
 //! Witnesses:
 //! - Old inventory state (root, volume, blinding)
@@ -22,6 +26,7 @@ use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisE
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use crate::range_check::{enforce_geq, enforce_u64_range};
 use crate::signal::{compute_signal_hash, OpType};
 use crate::smt::{verify_and_update, MerkleProof, MerkleProofVar};
 use crate::smt_commitment::create_smt_commitment_var;
@@ -31,9 +36,13 @@ use crate::smt_commitment::create_smt_commitment_var;
 /// Proves a valid deposit or withdrawal operation with capacity checking.
 #[derive(Clone)]
 pub struct StateTransitionCircuit<F: PrimeField + Absorb> {
-    // Public input (computed from all params)
-    /// Expected signal hash
+    // Public inputs
+    /// Expected signal hash (binds all parameters)
     pub signal_hash: Option<F>,
+    /// Nonce for replay protection (verified on-chain)
+    pub nonce: Option<u64>,
+    /// Inventory ID for cross-inventory protection (verified on-chain)
+    pub inventory_id: Option<F>,
 
     // Old state witnesses
     /// Old inventory SMT root
@@ -97,6 +106,8 @@ impl<F: PrimeField + Absorb> StateTransitionCircuit<F> {
 
         Self {
             signal_hash: Some(F::zero()),
+            nonce: Some(0),
+            inventory_id: Some(F::zero()),
             old_inventory_root: Some(F::zero()),
             old_volume: Some(0),
             old_blinding: Some(F::zero()),
@@ -135,6 +146,8 @@ impl<F: PrimeField + Absorb> StateTransitionCircuit<F> {
         item_volume: u64,
         registry_root: F,
         max_capacity: u64,
+        nonce: u64,
+        inventory_id: F,
         poseidon_config: Arc<PoseidonConfig<F>>,
     ) -> Self {
         // Compute commitments
@@ -151,7 +164,7 @@ impl<F: PrimeField + Absorb> StateTransitionCircuit<F> {
             &poseidon_config,
         );
 
-        // Compute signal hash
+        // Compute signal hash (includes nonce and inventory_id for replay/cross-inventory protection)
         let signal_hash = compute_signal_hash(
             old_commitment,
             new_commitment,
@@ -160,11 +173,15 @@ impl<F: PrimeField + Absorb> StateTransitionCircuit<F> {
             item_id,
             amount,
             op_type,
+            nonce,
+            inventory_id,
             &poseidon_config,
         );
 
         Self {
             signal_hash: Some(signal_hash),
+            nonce: Some(nonce),
+            inventory_id: Some(inventory_id),
             old_inventory_root: Some(old_inventory_root),
             old_volume: Some(old_volume),
             old_blinding: Some(old_blinding),
@@ -188,9 +205,18 @@ impl<F: PrimeField + Absorb> StateTransitionCircuit<F> {
 
 impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for StateTransitionCircuit<F> {
     fn generate_constraints(self, cs: ConstraintSystemRef<F>) -> Result<(), SynthesisError> {
-        // === Allocate public input ===
+        // === Allocate public inputs ===
+        // Order matters: signal_hash, nonce, inventory_id, registry_root
         let signal_hash_var = FpVar::new_input(cs.clone(), || {
             self.signal_hash.ok_or(SynthesisError::AssignmentMissing)
+        })?;
+        let nonce_var = FpVar::new_input(cs.clone(), || {
+            self.nonce
+                .map(F::from)
+                .ok_or(SynthesisError::AssignmentMissing)
+        })?;
+        let inventory_id_var = FpVar::new_input(cs.clone(), || {
+            self.inventory_id.ok_or(SynthesisError::AssignmentMissing)
         })?;
 
         // === Allocate old state witnesses ===
@@ -250,14 +276,17 @@ impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for StateTransitionCircuit
         let proof = self.inventory_proof.as_ref();
         let inventory_proof_var = MerkleProofVar::new_witness(cs.clone(), proof.unwrap())?;
 
+        // === Allocate registry public input ===
+        // registry_root is a public input so it can be verified on-chain against VolumeRegistry
+        let registry_root_var = FpVar::new_input(cs.clone(), || {
+            self.registry_root.ok_or(SynthesisError::AssignmentMissing)
+        })?;
+
         // === Allocate registry witnesses ===
         let item_volume_var = FpVar::new_witness(cs.clone(), || {
             self.item_volume
                 .map(F::from)
                 .ok_or(SynthesisError::AssignmentMissing)
-        })?;
-        let registry_root_var = FpVar::new_witness(cs.clone(), || {
-            self.registry_root.ok_or(SynthesisError::AssignmentMissing)
         })?;
         let max_capacity_var = FpVar::new_witness(cs.clone(), || {
             self.max_capacity
@@ -294,7 +323,12 @@ impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for StateTransitionCircuit
 
         new_qty_var.enforce_equal(&expected_new_qty)?;
 
-        // === Constraint 3: Verify volume change ===
+        // === Constraint 3: Range check on new quantity ===
+        // Prevents underflow attacks where withdraw > current quantity
+        // If qty_minus_amount wrapped around (negative), it won't fit in 64 bits
+        enforce_u64_range(cs.clone(), &new_qty_var)?;
+
+        // === Constraint 4: Verify volume change ===
         // volume_delta = item_volume * amount
         let volume_delta = &item_volume_var * &amount_var;
 
@@ -306,18 +340,16 @@ impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for StateTransitionCircuit
 
         new_volume_var.enforce_equal(&expected_new_volume)?;
 
-        // === Constraint 4: Capacity check ===
+        // === Constraint 5: Range check on new volume ===
+        // Prevents underflow attacks on volume
+        enforce_u64_range(cs.clone(), &new_volume_var)?;
+
+        // === Constraint 6: Capacity check ===
         // new_volume <= max_capacity
-        // We enforce: max_capacity - new_volume >= 0 (is non-negative)
-        // This is done by computing the difference and ensuring it's valid
-        let remaining_capacity = &max_capacity_var - &new_volume_var;
+        // enforce_geq checks that (max_capacity - new_volume) fits in 64 bits
+        enforce_geq(cs.clone(), &max_capacity_var, &new_volume_var)?;
 
-        // For simplicity, we use a boolean check
-        // In a full implementation, we'd need range proofs
-        // For now, we just ensure the values are consistent
-        // (The prover can only provide valid witnesses if capacity is respected)
-
-        // === Constraint 5: Compute commitments ===
+        // === Constraint 7: Compute commitments ===
         let old_commitment_var = create_smt_commitment_var(
             cs.clone(),
             &old_root_var,
@@ -334,7 +366,8 @@ impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for StateTransitionCircuit
             &self.poseidon_config,
         )?;
 
-        // === Constraint 6: Compute and verify signal hash ===
+        // === Constraint 8: Compute and verify signal hash ===
+        // Signal hash now includes nonce and inventory_id for replay/cross-inventory protection
         let computed_signal = crate::signal::compute_signal_hash_var(
             cs.clone(),
             &old_commitment_var,
@@ -344,12 +377,14 @@ impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for StateTransitionCircuit
             &item_id_var,
             &amount_var,
             &op_type_var,
+            &nonce_var,
+            &inventory_id_var,
             &self.poseidon_config,
         )?;
 
         computed_signal.enforce_equal(&signal_hash_var)?;
 
-        // === Constraint 7: Ensure op_type is valid (0 or 1) ===
+        // === Constraint 9: Ensure op_type is valid (0 or 1) ===
         let is_withdraw = op_type_var.is_eq(&one)?;
         let is_valid_op = is_deposit.or(&is_withdraw)?;
         is_valid_op.enforce_equal(&Boolean::TRUE)?;
@@ -396,6 +431,9 @@ mod tests {
         let registry_root = Fr::from(99999u64);
         let max_capacity = 10000u64;
 
+        let nonce = 0u64;
+        let inventory_id = Fr::from(12345678u64);
+
         let circuit = StateTransitionCircuit::new(
             old_root,
             old_volume,
@@ -412,6 +450,8 @@ mod tests {
             item_volume,
             registry_root,
             max_capacity,
+            nonce,
+            inventory_id,
             config.clone(),
         );
 
@@ -447,6 +487,8 @@ mod tests {
         let new_volume = 70 * item_volume;
         let registry_root = Fr::from(99999u64);
         let max_capacity = 10000u64;
+        let nonce = 5u64;
+        let inventory_id = Fr::from(12345678u64);
 
         let circuit = StateTransitionCircuit::new(
             old_root,
@@ -464,6 +506,8 @@ mod tests {
             item_volume,
             registry_root,
             max_capacity,
+            nonce,
+            inventory_id,
             config.clone(),
         );
 
@@ -494,6 +538,8 @@ mod tests {
         let new_volume = 100 * item_volume;
         let registry_root = Fr::from(99999u64);
         let max_capacity = 10000u64;
+        let nonce = 0u64;
+        let inventory_id = Fr::from(12345678u64);
 
         let circuit = StateTransitionCircuit::new(
             old_root,
@@ -511,6 +557,8 @@ mod tests {
             item_volume,
             registry_root,
             max_capacity,
+            nonce,
+            inventory_id,
             config.clone(),
         );
 
@@ -543,6 +591,8 @@ mod tests {
         let new_volume = 150 * item_volume;
         let registry_root = Fr::from(99999u64);
         let max_capacity = 10000u64;
+        let nonce = 0u64;
+        let inventory_id = Fr::from(12345678u64);
 
         // Try to claim we deposited 60 instead of 50
         let circuit = StateTransitionCircuit::new(
@@ -561,6 +611,8 @@ mod tests {
             item_volume,
             registry_root,
             max_capacity,
+            nonce,
+            inventory_id,
             config.clone(),
         );
 
@@ -592,6 +644,8 @@ mod tests {
         let old_volume = 100 * item_volume;
         let registry_root = Fr::from(99999u64);
         let max_capacity = 10000u64;
+        let nonce = 0u64;
+        let inventory_id = Fr::from(12345678u64);
 
         // Claim wrong new volume
         let circuit = StateTransitionCircuit::new(
@@ -610,6 +664,8 @@ mod tests {
             item_volume,
             registry_root,
             max_capacity,
+            nonce,
+            inventory_id,
             config.clone(),
         );
 
@@ -618,5 +674,50 @@ mod tests {
 
         // Should fail because volume doesn't match
         assert!(!cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn test_underflow_attack_blocked() {
+        // This test verifies that the range check prevents underflow attacks
+        let config = setup();
+
+        let mut tree = SparseMerkleTree::<Fr>::from_items(
+            &[(1, 50)],  // Only have 50 items
+            DEFAULT_DEPTH,
+            config.clone(),
+        );
+        let old_root = tree.root();
+        let proof = tree.get_proof(1);
+
+        // Attacker tries to withdraw 100 when only 50 exist
+        // Without range checks, 50 - 100 would wrap to a huge number
+        tree.update(1, 0); // Pretend we end up with 0 (invalid)
+        let new_root = tree.root();
+
+        let old_blinding = Fr::from(12345u64);
+        let new_blinding = Fr::from(67890u64);
+        let item_volume = 10u64;
+        let old_volume = 50 * item_volume;
+        let registry_root = Fr::from(99999u64);
+        let max_capacity = 10000u64;
+        let nonce = 0u64;
+        let inventory_id = Fr::from(12345678u64);
+
+        // The new_quantity would be 50 - 100 = -50, which wraps in field arithmetic
+        // But our range check should catch this
+        let wrapped_qty = Fr::from(50u64) - Fr::from(100u64); // This wraps!
+
+        // We can't even create a valid circuit because the signal hash would be wrong
+        // But let's verify the range check works by creating an empty circuit
+        // and manually testing the constraint
+        let cs = ConstraintSystem::<Fr>::new_ref();
+
+        // Allocate the wrapped value and try to range check it
+        let wrapped_var = FpVar::new_witness(cs.clone(), || Ok(wrapped_qty)).unwrap();
+
+        // This should fail - the wrapped value doesn't fit in 64 bits
+        crate::range_check::enforce_u64_range(cs.clone(), &wrapped_var).unwrap();
+
+        assert!(!cs.is_satisfied().unwrap(), "Range check should reject wrapped negative value");
     }
 }

@@ -135,16 +135,30 @@ export function Transfer() {
       const registryRoot = getRegistryRoot();
       const srcMaxCapacity = mode === 'demo' ? 0 : srcOnChain?.maxCapacity || 0;
 
+      // Get nonce and inventory_id for security binding
+      const srcNonce = mode === 'onchain' && srcOnChain ? srcOnChain.nonce : 0;
+      const srcInventoryId = mode === 'onchain' && srcOnChain
+        ? srcOnChain.id
+        : '0x0000000000000000000000000000000000000000000000000000000000000000';
+      const dstNonce = mode === 'onchain' && dstOnChain ? dstOnChain.nonce : 0;
+      const dstInventoryId = mode === 'onchain' && dstOnChain
+        ? dstOnChain.id
+        : '0x0000000000000000000000000000000000000000000000000000000000000000';
+
       const proofStart = performance.now();
       const result = await api.proveTransfer(
         currentSrcSlots,
         srcVolume,
         currentSrcBlinding,
         srcNewBlinding,
+        srcNonce,
+        srcInventoryId,
         currentDstSlots,
         dstVolume,
         currentDstBlinding,
         dstNewBlinding,
+        dstNonce,
+        dstInventoryId,
         itemId,
         amount,
         itemVolume,
@@ -210,28 +224,42 @@ export function Transfer() {
     newSourceSlots: InventorySlot[],
     newDstSlots: InventorySlot[]
   ) => {
-    if (!srcOnChain || !dstOnChain || !effectiveAddress) return;
+    if (!srcOnChain || !dstOnChain || !effectiveAddress || !volumeRegistryId) return;
 
     const txStart = performance.now();
     try {
       const srcProofBytes = hexToBytes(result.srcProof.proof);
       const srcSignalHashBytes = hexToBytes(result.srcProof.public_inputs[0]);
       const srcNewCommitmentBytes = hexToBytes(result.srcNewCommitment);
+      const srcInventoryIdBytes = hexToBytes(result.srcInventoryId);
+      const srcRegistryRootBytes = hexToBytes(result.srcRegistryRoot);
       const dstProofBytes = hexToBytes(result.dstProof.proof);
       const dstSignalHashBytes = hexToBytes(result.dstProof.public_inputs[0]);
       const dstNewCommitmentBytes = hexToBytes(result.dstNewCommitment);
+      const dstInventoryIdBytes = hexToBytes(result.dstInventoryId);
+      const dstRegistryRootBytes = hexToBytes(result.dstRegistryRoot);
 
       const tx = buildTransferTx(
         packageId,
         srcOnChain.id,
         dstOnChain.id,
+        volumeRegistryId,
         verifyingKeysId,
+        // Source parameters
         srcProofBytes,
         srcSignalHashBytes,
+        BigInt(result.srcNonce),
+        srcInventoryIdBytes,
+        srcRegistryRootBytes,
         srcNewCommitmentBytes,
+        // Destination parameters
         dstProofBytes,
         dstSignalHashBytes,
+        BigInt(result.dstNonce),
+        dstInventoryIdBytes,
+        dstRegistryRootBytes,
         dstNewCommitmentBytes,
+        // Transfer metadata
         itemId,
         BigInt(amount)
       );
