@@ -5,7 +5,7 @@
 use ark_bn254::Fr;
 use ark_ff::PrimeField;
 
-use crate::anemoi::anemoi_hash_two;
+use anemoi::anemoi_hash_two;
 
 /// A Merkle proof for an SMT leaf.
 ///

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/anemoi",
     "crates/circuits",
     "crates/prover",
     "crates/proof-server",

@@ -9,7 +9,7 @@
 use ark_bn254::Fr;
 use std::collections::HashMap;
 
-use crate::anemoi::anemoi_hash_two;
+use anemoi::anemoi_hash_two;
 use super::proof::MerkleProof;
 
 /// Default tree depth (12 levels = 4,096 possible items)

@@ -1,0 +1,22 @@
+[package]
+name = "anemoi"
+version = "0.1.0"
+edition = "2021"
+description = "Anemoi ZK-friendly hash function for BN254 with R1CS gadgets"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+ark-ff = "0.4"
+ark-bn254 = "0.4"
+ark-relations = "0.4"
+ark-r1cs-std = "0.4"
+num-bigint = "0.4"
+num-traits = "0.2"
+
+[dev-dependencies]
+ark-std = "0.4"
+rand = "0.8"
+
+[features]
+default = ["parallel"]
+parallel = ["ark-ff/parallel", "ark-std/parallel"]

@@ -12,7 +12,7 @@ use ark_bn254::Fr;
 use ark_r1cs_std::fields::fp::FpVar;
 use ark_relations::r1cs::{ConstraintSystemRef, SynthesisError};
 
-use crate::anemoi::{anemoi_hash_many, anemoi_hash_many_var};
+use anemoi::{anemoi_hash_many, anemoi_hash_many_var};
 
 /// Create an SMT-based inventory commitment using Anemoi.
 ///

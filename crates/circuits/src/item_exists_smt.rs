@@ -12,7 +12,7 @@ use ark_r1cs_std::fields::fp::FpVar;
 use ark_r1cs_std::prelude::*;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
 
-use crate::anemoi::{anemoi_hash_many, anemoi_hash_many_var};
+use anemoi::{anemoi_hash_many, anemoi_hash_many_var};
 use crate::smt::{verify_membership, MerkleProof, MerkleProofVar};
 use crate::smt_commitment::{create_smt_commitment, create_smt_commitment_var};
 

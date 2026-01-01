@@ -26,7 +26,7 @@ use ark_bn254::Fr;
 use ark_r1cs_std::fields::fp::FpVar;
 use ark_relations::r1cs::{ConstraintSystemRef, SynthesisError};
 
-use crate::anemoi::{anemoi_hash_many, anemoi_hash_many_var};
+use anemoi::{anemoi_hash_many, anemoi_hash_many_var};
 
 /// Operation types for state transitions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

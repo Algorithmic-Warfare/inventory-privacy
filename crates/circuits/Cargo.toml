@@ -5,6 +5,7 @@ edition = "2021"
 description = "ZK circuits for private inventory operations"
 
 [dependencies]
+anemoi = { path = "../anemoi" }
 ark-ff = "0.4"
 ark-relations = "0.4"
 ark-r1cs-std = "0.4"

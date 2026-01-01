@@ -11,7 +11,7 @@ use ark_r1cs_std::{
 };
 use ark_relations::r1cs::{ConstraintSystemRef, SynthesisError};
 
-use crate::anemoi::{anemoi_hash_two, anemoi_hash_two_var};
+use anemoi::{anemoi_hash_two, anemoi_hash_two_var};
 use super::proof::MerkleProof;
 
 /// Compute the default leaf hash H(0, 0) natively using Anemoi.

@@ -9,7 +9,6 @@
 //! reduction compared to Poseidon.
 
 // Core modules
-pub mod anemoi; // Anemoi hash function
 pub mod range_check; // Range checks for underflow prevention
 pub mod signal;
 pub mod smt;
@@ -23,7 +22,7 @@ pub mod state_transition;
 #[cfg(test)]
 mod tests;
 
-// Anemoi hash exports
+// Re-export anemoi crate
 pub use anemoi::{anemoi_hash, anemoi_hash_two, anemoi_hash_many};
 
 // SMT infrastructure
