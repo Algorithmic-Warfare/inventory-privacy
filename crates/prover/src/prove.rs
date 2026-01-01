@@ -1,7 +1,5 @@
 //! Proof generation for SMT-based inventory circuits.
 
-use std::sync::Arc;
-
 use ark_bn254::{Bn254, Fr};
 use ark_groth16::{Groth16, Proof, ProvingKey};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
@@ -10,7 +8,6 @@ use ark_std::rand::{rngs::StdRng, SeedableRng};
 use thiserror::Error;
 
 use inventory_circuits::{
-    poseidon_config,
     signal::OpType,
     smt::{MerkleProof, SparseMerkleTree, DEFAULT_DEPTH},
     smt_commitment::create_smt_commitment,
@@ -66,7 +63,7 @@ impl ProofWithInputs {
 #[derive(Clone)]
 pub struct InventoryState {
     /// Sparse Merkle Tree storing items
-    pub tree: SparseMerkleTree<Fr>,
+    pub tree: SparseMerkleTree,
     /// Current total volume
     pub current_volume: u64,
     /// Blinding factor for commitment
@@ -76,9 +73,8 @@ pub struct InventoryState {
 impl InventoryState {
     /// Create a new empty inventory state
     pub fn new(blinding: Fr) -> Self {
-        let config = Arc::new(poseidon_config::<Fr>());
         Self {
-            tree: SparseMerkleTree::new(DEFAULT_DEPTH, config),
+            tree: SparseMerkleTree::new(DEFAULT_DEPTH),
             current_volume: 0,
             blinding,
         }
@@ -86,8 +82,7 @@ impl InventoryState {
 
     /// Create inventory state from items
     pub fn from_items(items: &[(u64, u64)], blinding: Fr) -> Self {
-        let config = Arc::new(poseidon_config::<Fr>());
-        let tree = SparseMerkleTree::from_items(items, DEFAULT_DEPTH, config);
+        let tree = SparseMerkleTree::from_items(items, DEFAULT_DEPTH);
         Self {
             tree,
             current_volume: 0, // Volume must be set separately
@@ -112,12 +107,10 @@ impl InventoryState {
 
     /// Compute the commitment for this inventory state
     pub fn commitment(&self) -> Fr {
-        let config = Arc::new(poseidon_config::<Fr>());
         create_smt_commitment(
             self.tree.root(),
             self.current_volume,
             self.blinding,
-            &config,
         )
     }
 
@@ -216,7 +209,7 @@ pub struct StateTransitionResult {
 /// * `item_id` - Item being deposited/withdrawn
 /// * `amount` - Quantity being deposited/withdrawn
 /// * `item_volume` - Volume per unit of this item type
-/// * `registry_root` - VolumeRegistry Poseidon hash (must match on-chain)
+/// * `registry_root` - VolumeRegistry hash (must match on-chain)
 /// * `max_capacity` - Maximum allowed volume (0 = unlimited)
 /// * `nonce` - Current inventory nonce (must match on-chain, for replay protection)
 /// * `inventory_id` - Inventory object ID as field element (must match on-chain)
@@ -235,8 +228,6 @@ pub fn prove_state_transition(
     inventory_id: Fr,
     op_type: OpType,
 ) -> Result<StateTransitionResult, ProveError> {
-    let config = Arc::new(poseidon_config::<Fr>());
-
     // Get old quantities and proof
     let old_quantity = old_state.get_quantity(item_id);
     let inventory_proof = old_state.get_proof(item_id);
@@ -303,7 +294,6 @@ pub fn prove_state_transition(
         max_capacity,
         nonce,
         inventory_id,
-        config,
     );
 
     let signal_hash = circuit.signal_hash.unwrap();
@@ -335,8 +325,6 @@ pub fn prove_item_exists(
     item_id: u64,
     min_quantity: u64,
 ) -> Result<ProofWithInputs, ProveError> {
-    let config = Arc::new(poseidon_config::<Fr>());
-
     // Get actual quantity and proof
     let actual_quantity = state.get_quantity(item_id);
     if actual_quantity < min_quantity {
@@ -357,7 +345,6 @@ pub fn prove_item_exists(
         actual_quantity,
         min_quantity,
         proof,
-        config,
     );
 
     let public_hash = circuit.public_hash.unwrap();
@@ -379,8 +366,6 @@ pub fn prove_capacity(
     state: &InventoryState,
     max_capacity: u64,
 ) -> Result<ProofWithInputs, ProveError> {
-    let config = Arc::new(poseidon_config::<Fr>());
-
     // Verify capacity compliance (max_capacity of 0 means unlimited)
     if max_capacity > 0 && state.current_volume > max_capacity {
         return Err(ProveError::InvalidState(format!(
@@ -395,7 +380,6 @@ pub fn prove_capacity(
         state.current_volume,
         state.blinding,
         max_capacity,
-        config,
     );
 
     let public_hash = circuit.public_hash.unwrap();
@@ -417,15 +401,10 @@ mod tests {
     use crate::setup::{setup_capacity, setup_item_exists, setup_state_transition};
     use ark_std::rand::SeedableRng;
 
-    fn setup_config() -> Arc<ark_crypto_primitives::sponge::poseidon::PoseidonConfig<Fr>> {
-        Arc::new(poseidon_config::<Fr>())
-    }
-
     #[test]
     fn test_prove_item_exists() {
         let mut rng = StdRng::seed_from_u64(42);
-        let config = setup_config();
-        let keys = setup_item_exists(&mut rng, config.clone()).unwrap();
+        let keys = setup_item_exists(&mut rng).unwrap();
 
         // Create inventory with item
         let blinding = Fr::from(12345u64);
@@ -444,8 +423,7 @@ mod tests {
     #[test]
     fn test_prove_item_exists_insufficient() {
         let mut rng = StdRng::seed_from_u64(42);
-        let config = setup_config();
-        let keys = setup_item_exists(&mut rng, config.clone()).unwrap();
+        let keys = setup_item_exists(&mut rng).unwrap();
 
         let blinding = Fr::from(12345u64);
         let mut state = InventoryState::new(blinding);
@@ -460,8 +438,7 @@ mod tests {
     #[test]
     fn test_prove_capacity() {
         let mut rng = StdRng::seed_from_u64(42);
-        let config = setup_config();
-        let keys = setup_capacity(&mut rng, config.clone()).unwrap();
+        let keys = setup_capacity(&mut rng).unwrap();
 
         let blinding = Fr::from(12345u64);
         let mut state = InventoryState::new(blinding);
@@ -478,8 +455,7 @@ mod tests {
     #[test]
     fn test_prove_capacity_exceeded() {
         let mut rng = StdRng::seed_from_u64(42);
-        let config = setup_config();
-        let keys = setup_capacity(&mut rng, config.clone()).unwrap();
+        let keys = setup_capacity(&mut rng).unwrap();
 
         let blinding = Fr::from(12345u64);
         let mut state = InventoryState::new(blinding);
@@ -493,8 +469,7 @@ mod tests {
     #[test]
     fn test_prove_state_transition_deposit() {
         let mut rng = StdRng::seed_from_u64(42);
-        let config = setup_config();
-        let keys = setup_state_transition(&mut rng, config.clone()).unwrap();
+        let keys = setup_state_transition(&mut rng).unwrap();
 
         let blinding = Fr::from(12345u64);
         let new_blinding = Fr::from(67890u64);
@@ -532,8 +507,7 @@ mod tests {
     #[test]
     fn test_prove_state_transition_withdraw() {
         let mut rng = StdRng::seed_from_u64(42);
-        let config = setup_config();
-        let keys = setup_state_transition(&mut rng, config.clone()).unwrap();
+        let keys = setup_state_transition(&mut rng).unwrap();
 
         let blinding = Fr::from(12345u64);
         let new_blinding = Fr::from(67890u64);

@@ -4,10 +4,12 @@
 //! - `StateTransitionCircuit`: Prove valid deposit/withdraw with capacity checking
 //! - `ItemExistsSMTCircuit`: Prove inventory contains >= N of item X
 //! - `CapacitySMTCircuit`: Prove inventory volume is within capacity
+//!
+//! All circuits use the Anemoi hash function (CRYPTO 2023) for ~2x constraint
+//! reduction compared to Poseidon.
 
 // Core modules
-pub mod anemoi; // Anemoi hash function (alternative to Poseidon)
-pub mod commitment; // Poseidon config (shared)
+pub mod anemoi; // Anemoi hash function
 pub mod range_check; // Range checks for underflow prevention
 pub mod signal;
 pub mod smt;
@@ -21,8 +23,8 @@ pub mod state_transition;
 #[cfg(test)]
 mod tests;
 
-// Poseidon configuration (shared utility)
-pub use commitment::poseidon_config;
+// Anemoi hash exports
+pub use anemoi::{anemoi_hash, anemoi_hash_two, anemoi_hash_many};
 
 // SMT infrastructure
 pub use smt::{
@@ -47,5 +49,5 @@ pub use capacity_smt::{compute_capacity_hash, CapacitySMTCircuit};
 
 use ark_bn254::Fr;
 
-/// Common type aliases
+/// Common type alias for the BN254 scalar field
 pub type ConstraintF = Fr;

@@ -1,21 +1,13 @@
 //! Integration tests for the SMT module.
 
 use super::*;
-use crate::commitment::poseidon_config;
 use ark_bn254::Fr;
 use ark_relations::r1cs::ConstraintSystem;
 use ark_r1cs_std::prelude::*;
 use ark_r1cs_std::fields::fp::FpVar;
-use std::sync::Arc;
-
-fn setup() -> Arc<ark_crypto_primitives::sponge::poseidon::PoseidonConfig<Fr>> {
-    Arc::new(poseidon_config())
-}
 
 #[test]
 fn test_full_workflow() {
-    let config = setup();
-
     // Create tree with some items
     let items = vec![
         (1, 100),   // Sword: 100
@@ -23,7 +15,7 @@ fn test_full_workflow() {
         (100, 25),  // Rare item: 25
     ];
 
-    let tree = SparseMerkleTree::<Fr>::from_items(&items, DEFAULT_DEPTH, config.clone());
+    let tree = SparseMerkleTree::from_items(&items, DEFAULT_DEPTH);
 
     // Verify all items
     for &(item_id, quantity) in &items {
@@ -37,9 +29,7 @@ fn test_full_workflow() {
 
 #[test]
 fn test_deposit_workflow() {
-    let config = setup();
-
-    let mut tree = SparseMerkleTree::<Fr>::new(DEFAULT_DEPTH, config.clone());
+    let mut tree = SparseMerkleTree::new(DEFAULT_DEPTH);
 
     // Initial state: empty
     let initial_root = tree.root();
@@ -58,13 +48,7 @@ fn test_deposit_workflow() {
 
 #[test]
 fn test_withdraw_workflow() {
-    let config = setup();
-
-    let mut tree = SparseMerkleTree::<Fr>::from_items(
-        &[(1, 100)],
-        DEFAULT_DEPTH,
-        config.clone(),
-    );
+    let mut tree = SparseMerkleTree::from_items(&[(1, 100)], DEFAULT_DEPTH);
 
     // Get proof before withdraw
     let old_root = tree.root();
@@ -79,20 +63,14 @@ fn test_withdraw_workflow() {
 
     // Old proof should still be valid for OLD state
     // (This is how we verify the old state in circuits)
-    let old_computed = proof.compute_root(1, 100, &config);
+    let old_computed = proof.compute_root(1, 100);
     assert_eq!(old_computed, old_root);
 }
 
 #[test]
 fn test_circuit_deposit() {
-    let config = setup();
-
     // Initial inventory with 1 item
-    let mut tree = SparseMerkleTree::<Fr>::from_items(
-        &[(1, 100)],
-        DEFAULT_DEPTH,
-        config.clone(),
-    );
+    let mut tree = SparseMerkleTree::from_items(&[(1, 100)], DEFAULT_DEPTH);
 
     let old_root = tree.root();
     let proof = tree.get_proof(1);
@@ -112,7 +90,6 @@ fn test_circuit_deposit() {
     let proof_var = MerkleProofVar::new_witness(cs.clone(), &proof).unwrap();
 
     // Verify old state and compute new root
-    let default_leaf_hash = compute_default_leaf_hash(&config);
     let computed_new_root = verify_and_update(
         cs.clone(),
         &old_root_var,
@@ -120,8 +97,6 @@ fn test_circuit_deposit() {
         &old_qty_var,
         &new_qty_var,
         &proof_var,
-        default_leaf_hash,
-        &config,
     ).unwrap();
 
     // Enforce new root matches
@@ -133,13 +108,7 @@ fn test_circuit_deposit() {
 
 #[test]
 fn test_circuit_withdraw() {
-    let config = setup();
-
-    let mut tree = SparseMerkleTree::<Fr>::from_items(
-        &[(1, 100)],
-        DEFAULT_DEPTH,
-        config.clone(),
-    );
+    let mut tree = SparseMerkleTree::from_items(&[(1, 100)], DEFAULT_DEPTH);
 
     let old_root = tree.root();
     let proof = tree.get_proof(1);
@@ -157,7 +126,6 @@ fn test_circuit_withdraw() {
     let new_qty_var = FpVar::new_witness(cs.clone(), || Ok(Fr::from(70u64))).unwrap();
     let proof_var = MerkleProofVar::new_witness(cs.clone(), &proof).unwrap();
 
-    let default_leaf_hash = compute_default_leaf_hash(&config);
     let computed_new_root = verify_and_update(
         cs.clone(),
         &old_root_var,
@@ -165,8 +133,6 @@ fn test_circuit_withdraw() {
         &old_qty_var,
         &new_qty_var,
         &proof_var,
-        default_leaf_hash,
-        &config,
     ).unwrap();
 
     computed_new_root.enforce_equal(&new_root_var).unwrap();
@@ -177,10 +143,8 @@ fn test_circuit_withdraw() {
 
 #[test]
 fn test_circuit_new_item() {
-    let config = setup();
-
     // Start with empty tree
-    let mut tree = SparseMerkleTree::<Fr>::new(DEFAULT_DEPTH, config.clone());
+    let mut tree = SparseMerkleTree::new(DEFAULT_DEPTH);
 
     let old_root = tree.root();
     let proof = tree.get_proof(42); // Get proof for empty slot
@@ -198,7 +162,6 @@ fn test_circuit_new_item() {
     let new_qty_var = FpVar::new_witness(cs.clone(), || Ok(Fr::from(100u64))).unwrap();
     let proof_var = MerkleProofVar::new_witness(cs.clone(), &proof).unwrap();
 
-    let default_leaf_hash = compute_default_leaf_hash(&config);
     let computed_new_root = verify_and_update(
         cs.clone(),
         &old_root_var,
@@ -206,8 +169,6 @@ fn test_circuit_new_item() {
         &old_qty_var,
         &new_qty_var,
         &proof_var,
-        default_leaf_hash,
-        &config,
     ).unwrap();
 
     computed_new_root.enforce_equal(&new_root_var).unwrap();
@@ -218,13 +179,7 @@ fn test_circuit_new_item() {
 
 #[test]
 fn test_soundness_wrong_old_quantity() {
-    let config = setup();
-
-    let mut tree = SparseMerkleTree::<Fr>::from_items(
-        &[(1, 100)],
-        DEFAULT_DEPTH,
-        config.clone(),
-    );
+    let mut tree = SparseMerkleTree::from_items(&[(1, 100)], DEFAULT_DEPTH);
 
     let old_root = tree.root();
     let proof = tree.get_proof(1);
@@ -242,7 +197,6 @@ fn test_soundness_wrong_old_quantity() {
     let new_qty_var = FpVar::new_witness(cs.clone(), || Ok(Fr::from(150u64))).unwrap();
     let proof_var = MerkleProofVar::new_witness(cs.clone(), &proof).unwrap();
 
-    let default_leaf_hash = compute_default_leaf_hash(&config);
     let computed_new_root = verify_and_update(
         cs.clone(),
         &old_root_var,
@@ -250,8 +204,6 @@ fn test_soundness_wrong_old_quantity() {
         &old_qty_var,
         &new_qty_var,
         &proof_var,
-        default_leaf_hash,
-        &config,
     ).unwrap();
 
     computed_new_root.enforce_equal(&new_root_var).unwrap();
@@ -262,13 +214,7 @@ fn test_soundness_wrong_old_quantity() {
 
 #[test]
 fn test_soundness_wrong_item_id() {
-    let config = setup();
-
-    let mut tree = SparseMerkleTree::<Fr>::from_items(
-        &[(1, 100)],
-        DEFAULT_DEPTH,
-        config.clone(),
-    );
+    let mut tree = SparseMerkleTree::from_items(&[(1, 100)], DEFAULT_DEPTH);
 
     let old_root = tree.root();
     let proof = tree.get_proof(1);
@@ -286,7 +232,6 @@ fn test_soundness_wrong_item_id() {
     let new_qty_var = FpVar::new_witness(cs.clone(), || Ok(Fr::from(150u64))).unwrap();
     let proof_var = MerkleProofVar::new_witness(cs.clone(), &proof).unwrap();
 
-    let default_leaf_hash = compute_default_leaf_hash(&config);
     let computed_new_root = verify_and_update(
         cs.clone(),
         &old_root_var,
@@ -294,8 +239,6 @@ fn test_soundness_wrong_item_id() {
         &old_qty_var,
         &new_qty_var,
         &proof_var,
-        default_leaf_hash,
-        &config,
     ).unwrap();
 
     computed_new_root.enforce_equal(&new_root_var).unwrap();
@@ -306,8 +249,6 @@ fn test_soundness_wrong_item_id() {
 
 #[test]
 fn test_large_item_ids() {
-    let config = setup();
-
     // Use item IDs near the max for depth 12 (0 to 4095)
     let items = vec![
         (0, 10),
@@ -316,7 +257,7 @@ fn test_large_item_ids() {
         (4095, 40),
     ];
 
-    let tree = SparseMerkleTree::<Fr>::from_items(&items, DEFAULT_DEPTH, config.clone());
+    let tree = SparseMerkleTree::from_items(&items, DEFAULT_DEPTH);
 
     for &(item_id, quantity) in &items {
         let proof = tree.get_proof(item_id);
@@ -327,8 +268,7 @@ fn test_large_item_ids() {
 #[test]
 #[should_panic(expected = "item_id exceeds tree capacity")]
 fn test_item_id_overflow() {
-    let config = setup();
-    let mut tree = SparseMerkleTree::<Fr>::new(DEFAULT_DEPTH, config);
+    let mut tree = SparseMerkleTree::new(DEFAULT_DEPTH);
 
     // 4096 is out of bounds for depth 12 (max is 4095)
     tree.update(4096, 100);

@@ -14,6 +14,7 @@ import { ITEM_NAMES, calculateUsedVolume } from '../types';
 import * as api from '../api/client';
 import type { ProofResult as ProofResultType } from '../types';
 import type { OnChainInventory } from '../sui/hooks';
+import { hasLocalSigner, getLocalAddress } from '../sui/localSigner';
 
 /** Pending proof request in queue */
 interface PendingProof {
@@ -35,6 +36,11 @@ export function ProveOwnership() {
   const account = useCurrentAccount();
   const client = useSuiClient();
   const { packageId, verifyingKeysId } = useContractAddresses();
+
+  // Use local signer if available, otherwise fall back to wallet
+  const useLocalSignerFlag = hasLocalSigner();
+  const localAddress = useLocalSignerFlag ? getLocalAddress() : null;
+  const effectiveAddress = localAddress || account?.address;
 
   // Inventory selection
   const [selectedInventory, setSelectedInventory] = useState<OnChainInventory | null>(null);
@@ -95,7 +101,7 @@ export function ProveOwnership() {
 
   // Execute all proofs in parallel
   const execute = async () => {
-    if (!currentBlinding || pendingProofs.length === 0 || !selectedInventory || !account) return;
+    if (!currentBlinding || pendingProofs.length === 0 || !selectedInventory || !effectiveAddress) return;
 
     setLoading(true);
     setError(null);
@@ -142,7 +148,7 @@ export function ProveOwnership() {
 
           const devInspectResult = await client.devInspectTransactionBlock({
             transactionBlock: tx as unknown as Parameters<typeof client.devInspectTransactionBlock>[0]['transactionBlock'],
-            sender: account.address,
+            sender: effectiveAddress,
           });
 
           const returnValues = devInspectResult.results?.[0]?.returnValues;
@@ -312,7 +318,7 @@ export function ProveOwnership() {
                 </div>
                 <button
                   onClick={execute}
-                  disabled={loading || pendingProofs.length === 0 || !currentBlinding || !account}
+                  disabled={loading || pendingProofs.length === 0 || !currentBlinding || !effectiveAddress}
                   className="btn btn-primary"
                   style={{ width: '100%' }}
                 >
@@ -320,8 +326,8 @@ export function ProveOwnership() {
                     ? 'PROCESSING...'
                     : `[PROVE & VERIFY ${pendingProofs.length} ITEM${pendingProofs.length !== 1 ? 'S' : ''}]`}
                 </button>
-                {!account && (
-                  <p className="text-small text-error mt-1">[!!] Connect wallet to verify proofs on-chain</p>
+                {!effectiveAddress && (
+                  <p className="text-small text-error mt-1">[!!] No signer available</p>
                 )}
               </div>
             </div>

@@ -3,100 +3,82 @@
 //! Proves that an inventory's total volume is within capacity limits.
 //! This is much simpler than the old circuit since volume is tracked incrementally.
 //!
-//! Public input: Poseidon(commitment, max_capacity)
+//! Public input: Anemoi(commitment, max_capacity)
 //!
 //! This allows proving compliance without revealing actual volume.
 
-use ark_crypto_primitives::sponge::poseidon::{PoseidonConfig, PoseidonSponge};
-use ark_crypto_primitives::sponge::{Absorb, CryptographicSponge};
-use ark_crypto_primitives::sponge::poseidon::constraints::PoseidonSpongeVar;
-use ark_crypto_primitives::sponge::constraints::CryptographicSpongeVar;
-use ark_ff::PrimeField;
+use ark_bn254::Fr;
 use ark_r1cs_std::fields::fp::FpVar;
 use ark_r1cs_std::prelude::*;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
-use std::marker::PhantomData;
-use std::sync::Arc;
 
-use crate::smt_commitment::create_smt_commitment_var;
+use crate::anemoi::{anemoi_hash_many, anemoi_hash_many_var};
+use crate::smt_commitment::{create_smt_commitment, create_smt_commitment_var};
 
 /// Compute the public input hash for Capacity proof.
-pub fn compute_capacity_hash<F: PrimeField + Absorb>(
-    commitment: F,
+pub fn compute_capacity_hash(
+    commitment: Fr,
     max_capacity: u64,
-    config: &PoseidonConfig<F>,
-) -> F {
+) -> Fr {
     let inputs = vec![
         commitment,
-        F::from(max_capacity),
+        Fr::from(max_capacity),
     ];
-    let mut sponge = PoseidonSponge::new(config);
-    sponge.absorb(&inputs);
-    sponge.squeeze_field_elements(1)[0]
+    anemoi_hash_many(&inputs)
 }
 
 /// Capacity Proof Circuit for SMT-based inventory.
 ///
 /// Proves current_volume <= max_capacity.
 #[derive(Clone)]
-pub struct CapacitySMTCircuit<F: PrimeField + Absorb> {
+pub struct CapacitySMTCircuit {
     /// Public input hash
-    pub public_hash: Option<F>,
+    pub public_hash: Option<Fr>,
 
     // Commitment components (witnesses)
     /// Inventory SMT root
-    pub inventory_root: Option<F>,
+    pub inventory_root: Option<Fr>,
     /// Current volume (witness - what we're proving about)
     pub current_volume: Option<u64>,
     /// Blinding factor
-    pub blinding: Option<F>,
+    pub blinding: Option<Fr>,
 
     // Capacity (witness, but bound by public hash)
     /// Maximum allowed capacity
     pub max_capacity: Option<u64>,
-
-    /// Poseidon configuration
-    pub poseidon_config: Arc<PoseidonConfig<F>>,
-
-    _marker: PhantomData<F>,
 }
 
-impl<F: PrimeField + Absorb> CapacitySMTCircuit<F> {
+impl CapacitySMTCircuit {
     /// Create an empty circuit for setup.
     /// Uses dummy values that produce valid constraint structure.
-    pub fn empty(poseidon_config: Arc<PoseidonConfig<F>>) -> Self {
+    pub fn empty() -> Self {
         Self {
-            public_hash: Some(F::zero()),
-            inventory_root: Some(F::zero()),
+            public_hash: Some(Fr::from(0u64)),
+            inventory_root: Some(Fr::from(0u64)),
             current_volume: Some(0),
-            blinding: Some(F::zero()),
+            blinding: Some(Fr::from(0u64)),
             max_capacity: Some(0),
-            poseidon_config,
-            _marker: PhantomData,
         }
     }
 
     /// Create a new circuit with witnesses.
     pub fn new(
-        inventory_root: F,
+        inventory_root: Fr,
         current_volume: u64,
-        blinding: F,
+        blinding: Fr,
         max_capacity: u64,
-        poseidon_config: Arc<PoseidonConfig<F>>,
     ) -> Self {
-        // Compute commitment
-        let commitment = crate::smt_commitment::create_smt_commitment(
+        // Compute commitment using Anemoi
+        let commitment = create_smt_commitment(
             inventory_root,
             current_volume,
             blinding,
-            &poseidon_config,
         );
 
-        // Compute public hash
+        // Compute public hash using Anemoi
         let public_hash = compute_capacity_hash(
             commitment,
             max_capacity,
-            &poseidon_config,
         );
 
         Self {
@@ -105,14 +87,12 @@ impl<F: PrimeField + Absorb> CapacitySMTCircuit<F> {
             current_volume: Some(current_volume),
             blinding: Some(blinding),
             max_capacity: Some(max_capacity),
-            poseidon_config,
-            _marker: PhantomData,
         }
     }
 }
 
-impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for CapacitySMTCircuit<F> {
-    fn generate_constraints(self, cs: ConstraintSystemRef<F>) -> Result<(), SynthesisError> {
+impl ConstraintSynthesizer<Fr> for CapacitySMTCircuit {
+    fn generate_constraints(self, cs: ConstraintSystemRef<Fr>) -> Result<(), SynthesisError> {
         // === Allocate public input ===
         let public_hash_var = FpVar::new_input(cs.clone(), || {
             self.public_hash.ok_or(SynthesisError::AssignmentMissing)
@@ -124,7 +104,7 @@ impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for CapacitySMTCircuit<F> 
         })?;
         let volume_var = FpVar::new_witness(cs.clone(), || {
             self.current_volume
-                .map(F::from)
+                .map(Fr::from)
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
         let blinding_var = FpVar::new_witness(cs.clone(), || {
@@ -134,29 +114,26 @@ impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for CapacitySMTCircuit<F> 
         // === Allocate capacity witness ===
         let max_capacity_var = FpVar::new_witness(cs.clone(), || {
             self.max_capacity
-                .map(F::from)
+                .map(Fr::from)
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
 
-        // === Constraint 1: Compute commitment ===
+        // === Constraint 1: Compute commitment using Anemoi ===
         let commitment_var = create_smt_commitment_var(
             cs.clone(),
             &root_var,
             &volume_var,
             &blinding_var,
-            &self.poseidon_config,
         )?;
 
-        // === Constraint 2: Compute and verify public hash ===
+        // === Constraint 2: Compute and verify public hash using Anemoi ===
         let inputs = vec![
             commitment_var,
             max_capacity_var.clone(),
         ];
-        let mut sponge = PoseidonSpongeVar::new(cs.clone(), &self.poseidon_config);
-        sponge.absorb(&inputs)?;
-        let computed_hash = sponge.squeeze_field_elements(1)?;
+        let computed_hash = anemoi_hash_many_var(cs.clone(), &inputs)?;
 
-        computed_hash[0].enforce_equal(&public_hash_var)?;
+        computed_hash.enforce_equal(&public_hash_var)?;
 
         // === Constraint 3: current_volume <= max_capacity ===
         // The prover can only provide valid witnesses if this holds
@@ -179,24 +156,15 @@ impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for CapacitySMTCircuit<F> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commitment::poseidon_config;
     use crate::smt::{SparseMerkleTree, DEFAULT_DEPTH};
-    use ark_bn254::Fr;
     use ark_relations::r1cs::ConstraintSystem;
-
-    fn setup() -> Arc<PoseidonConfig<Fr>> {
-        Arc::new(poseidon_config())
-    }
 
     #[test]
     fn test_capacity_valid() {
-        let config = setup();
-
         // Create inventory
-        let tree = SparseMerkleTree::<Fr>::from_items(
+        let tree = SparseMerkleTree::from_items(
             &[(1, 100), (2, 50)],
             DEFAULT_DEPTH,
-            config.clone(),
         );
         let root = tree.root();
 
@@ -209,7 +177,6 @@ mod tests {
             volume,
             blinding,
             max_capacity,
-            config.clone(),
         );
 
         let cs = ConstraintSystem::<Fr>::new_ref();
@@ -221,12 +188,9 @@ mod tests {
 
     #[test]
     fn test_capacity_at_limit() {
-        let config = setup();
-
-        let tree = SparseMerkleTree::<Fr>::from_items(
+        let tree = SparseMerkleTree::from_items(
             &[(1, 100)],
             DEFAULT_DEPTH,
-            config.clone(),
         );
         let root = tree.root();
 
@@ -239,7 +203,6 @@ mod tests {
             volume,
             blinding,
             max_capacity,
-            config.clone(),
         );
 
         let cs = ConstraintSystem::<Fr>::new_ref();
@@ -250,9 +213,7 @@ mod tests {
 
     #[test]
     fn test_capacity_empty_inventory() {
-        let config = setup();
-
-        let tree = SparseMerkleTree::<Fr>::new(DEFAULT_DEPTH, config.clone());
+        let tree = SparseMerkleTree::new(DEFAULT_DEPTH);
         let root = tree.root();
 
         let blinding = Fr::from(12345u64);
@@ -264,7 +225,6 @@ mod tests {
             volume,
             blinding,
             max_capacity,
-            config.clone(),
         );
 
         let cs = ConstraintSystem::<Fr>::new_ref();
@@ -275,12 +235,9 @@ mod tests {
 
     #[test]
     fn test_capacity_wrong_commitment() {
-        let config = setup();
-
-        let tree = SparseMerkleTree::<Fr>::from_items(
+        let tree = SparseMerkleTree::from_items(
             &[(1, 100)],
             DEFAULT_DEPTH,
-            config.clone(),
         );
         let root = tree.root();
 
@@ -294,7 +251,6 @@ mod tests {
             volume,
             blinding,
             max_capacity,
-            config.clone(),
         );
 
         // Tamper with the root

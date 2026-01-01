@@ -171,6 +171,34 @@ pub fn anemoi_hash_var(
     anemoi_hash_two_var(cs, input, &zero)
 }
 
+/// Hash multiple field elements in-circuit using Anemoi in sponge-like mode.
+///
+/// This absorbs inputs in pairs and produces a single output.
+/// The algorithm matches the native `anemoi_hash_many` function.
+pub fn anemoi_hash_many_var(
+    cs: ConstraintSystemRef<Fr>,
+    inputs: &[FpVar<Fr>],
+) -> Result<FpVar<Fr>, SynthesisError> {
+    if inputs.is_empty() {
+        let zero = FpVar::zero();
+        return anemoi_hash_two_var(cs, &zero, &zero);
+    }
+
+    if inputs.len() == 1 {
+        return anemoi_hash_var(cs, &inputs[0]);
+    }
+
+    // Start with first two inputs
+    let mut acc = anemoi_hash_two_var(cs.clone(), &inputs[0], &inputs[1])?;
+
+    // Absorb remaining inputs one at a time
+    for input in inputs.iter().skip(2) {
+        acc = anemoi_hash_two_var(cs.clone(), &acc, input)?;
+    }
+
+    Ok(acc)
+}
+
 #[cfg(test)]
 mod gadget_tests {
     use super::*;

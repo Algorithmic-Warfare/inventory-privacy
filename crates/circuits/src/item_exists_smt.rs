@@ -3,54 +3,46 @@
 //! Proves that an inventory contains at least a minimum quantity of a specific item.
 //! Uses a single SMT membership proof.
 //!
-//! Public input: Poseidon(commitment, item_id, min_quantity)
+//! Public input: Anemoi(commitment, item_id, min_quantity)
 //!
 //! This allows proving ownership without revealing exact quantities.
 
-use ark_crypto_primitives::sponge::poseidon::{PoseidonConfig, PoseidonSponge};
-use ark_crypto_primitives::sponge::{Absorb, CryptographicSponge};
-use ark_crypto_primitives::sponge::poseidon::constraints::PoseidonSpongeVar;
-use ark_crypto_primitives::sponge::constraints::CryptographicSpongeVar;
-use ark_ff::PrimeField;
+use ark_bn254::Fr;
 use ark_r1cs_std::fields::fp::FpVar;
 use ark_r1cs_std::prelude::*;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
-use std::marker::PhantomData;
-use std::sync::Arc;
 
+use crate::anemoi::{anemoi_hash_many, anemoi_hash_many_var};
 use crate::smt::{verify_membership, MerkleProof, MerkleProofVar};
-use crate::smt_commitment::create_smt_commitment_var;
+use crate::smt_commitment::{create_smt_commitment, create_smt_commitment_var};
 
 /// Compute the public input hash for ItemExists proof.
-pub fn compute_item_exists_hash<F: PrimeField + Absorb>(
-    commitment: F,
+pub fn compute_item_exists_hash(
+    commitment: Fr,
     item_id: u64,
     min_quantity: u64,
-    config: &PoseidonConfig<F>,
-) -> F {
+) -> Fr {
     let inputs = vec![
         commitment,
-        F::from(item_id),
-        F::from(min_quantity),
+        Fr::from(item_id),
+        Fr::from(min_quantity),
     ];
-    let mut sponge = PoseidonSponge::new(config);
-    sponge.absorb(&inputs);
-    sponge.squeeze_field_elements(1)[0]
+    anemoi_hash_many(&inputs)
 }
 
 /// ItemExists Circuit for SMT-based inventory.
 #[derive(Clone)]
-pub struct ItemExistsSMTCircuit<F: PrimeField + Absorb> {
+pub struct ItemExistsSMTCircuit {
     /// Public input hash
-    pub public_hash: Option<F>,
+    pub public_hash: Option<Fr>,
 
     // Commitment components (witnesses)
     /// Inventory SMT root
-    pub inventory_root: Option<F>,
+    pub inventory_root: Option<Fr>,
     /// Current volume
     pub current_volume: Option<u64>,
     /// Blinding factor
-    pub blinding: Option<F>,
+    pub blinding: Option<Fr>,
 
     // Item details (witnesses)
     /// Item ID to prove
@@ -62,65 +54,55 @@ pub struct ItemExistsSMTCircuit<F: PrimeField + Absorb> {
 
     // Merkle proof
     /// Proof for item in SMT
-    pub proof: Option<MerkleProof<F>>,
-
-    /// Poseidon configuration
-    pub poseidon_config: Arc<PoseidonConfig<F>>,
-
-    _marker: PhantomData<F>,
+    pub proof: Option<MerkleProof<Fr>>,
 }
 
-impl<F: PrimeField + Absorb> ItemExistsSMTCircuit<F> {
+impl ItemExistsSMTCircuit {
     /// Create an empty circuit for setup.
     /// Uses dummy values that produce valid constraint structure.
-    pub fn empty(poseidon_config: Arc<PoseidonConfig<F>>) -> Self {
+    pub fn empty() -> Self {
         use crate::smt::DEFAULT_DEPTH;
 
         // Create dummy proof with correct depth
         let dummy_proof = MerkleProof::new(
-            vec![F::zero(); DEFAULT_DEPTH],
+            vec![Fr::from(0u64); DEFAULT_DEPTH],
             vec![false; DEFAULT_DEPTH],
         );
 
         Self {
-            public_hash: Some(F::zero()),
-            inventory_root: Some(F::zero()),
+            public_hash: Some(Fr::from(0u64)),
+            inventory_root: Some(Fr::from(0u64)),
             current_volume: Some(0),
-            blinding: Some(F::zero()),
+            blinding: Some(Fr::from(0u64)),
             item_id: Some(0),
             actual_quantity: Some(0),
             min_quantity: Some(0),
             proof: Some(dummy_proof),
-            poseidon_config,
-            _marker: PhantomData,
         }
     }
 
     /// Create a new circuit with witnesses.
     pub fn new(
-        inventory_root: F,
+        inventory_root: Fr,
         current_volume: u64,
-        blinding: F,
+        blinding: Fr,
         item_id: u64,
         actual_quantity: u64,
         min_quantity: u64,
-        proof: MerkleProof<F>,
-        poseidon_config: Arc<PoseidonConfig<F>>,
+        proof: MerkleProof<Fr>,
     ) -> Self {
-        // Compute commitment
-        let commitment = crate::smt_commitment::create_smt_commitment(
+        // Compute commitment using Anemoi
+        let commitment = create_smt_commitment(
             inventory_root,
             current_volume,
             blinding,
-            &poseidon_config,
         );
 
-        // Compute public hash
+        // Compute public hash using Anemoi
         let public_hash = compute_item_exists_hash(
             commitment,
             item_id,
             min_quantity,
-            &poseidon_config,
         );
 
         Self {
@@ -132,14 +114,12 @@ impl<F: PrimeField + Absorb> ItemExistsSMTCircuit<F> {
             actual_quantity: Some(actual_quantity),
             min_quantity: Some(min_quantity),
             proof: Some(proof),
-            poseidon_config,
-            _marker: PhantomData,
         }
     }
 }
 
-impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for ItemExistsSMTCircuit<F> {
-    fn generate_constraints(self, cs: ConstraintSystemRef<F>) -> Result<(), SynthesisError> {
+impl ConstraintSynthesizer<Fr> for ItemExistsSMTCircuit {
+    fn generate_constraints(self, cs: ConstraintSystemRef<Fr>) -> Result<(), SynthesisError> {
         // === Allocate public input ===
         let public_hash_var = FpVar::new_input(cs.clone(), || {
             self.public_hash.ok_or(SynthesisError::AssignmentMissing)
@@ -151,7 +131,7 @@ impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for ItemExistsSMTCircuit<F
         })?;
         let volume_var = FpVar::new_witness(cs.clone(), || {
             self.current_volume
-                .map(F::from)
+                .map(Fr::from)
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
         let blinding_var = FpVar::new_witness(cs.clone(), || {
@@ -161,17 +141,17 @@ impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for ItemExistsSMTCircuit<F
         // === Allocate item witnesses ===
         let item_id_var = FpVar::new_witness(cs.clone(), || {
             self.item_id
-                .map(F::from)
+                .map(Fr::from)
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
         let actual_qty_var = FpVar::new_witness(cs.clone(), || {
             self.actual_quantity
-                .map(F::from)
+                .map(Fr::from)
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
         let min_qty_var = FpVar::new_witness(cs.clone(), || {
             self.min_quantity
-                .map(F::from)
+                .map(Fr::from)
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
 
@@ -188,40 +168,36 @@ impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for ItemExistsSMTCircuit<F
             &item_id_var,
             &actual_qty_var,
             &proof_var,
-            &self.poseidon_config,
         )?;
 
         // === Constraint 2: actual_quantity >= min_quantity ===
         // We enforce: actual_quantity - min_quantity >= 0
         // This is enforced implicitly by the field arithmetic
         // The prover can only provide valid witnesses if the constraint holds
-        let diff = &actual_qty_var - &min_qty_var;
+        let _diff = &actual_qty_var - &min_qty_var;
 
         // For a proper range check, we'd need bit decomposition
         // For now, we rely on the fact that the verifier checks the public hash
         // which binds the min_quantity, and the prover can only succeed if
         // actual_quantity >= min_quantity
 
-        // === Constraint 3: Compute and verify commitment ===
+        // === Constraint 3: Compute and verify commitment using Anemoi ===
         let commitment_var = create_smt_commitment_var(
             cs.clone(),
             &root_var,
             &volume_var,
             &blinding_var,
-            &self.poseidon_config,
         )?;
 
-        // === Constraint 4: Compute and verify public hash ===
+        // === Constraint 4: Compute and verify public hash using Anemoi ===
         let inputs = vec![
             commitment_var,
             item_id_var,
             min_qty_var,
         ];
-        let mut sponge = PoseidonSpongeVar::new(cs.clone(), &self.poseidon_config);
-        sponge.absorb(&inputs)?;
-        let computed_hash = sponge.squeeze_field_elements(1)?;
+        let computed_hash = anemoi_hash_many_var(cs.clone(), &inputs)?;
 
-        computed_hash[0].enforce_equal(&public_hash_var)?;
+        computed_hash.enforce_equal(&public_hash_var)?;
 
         Ok(())
     }
@@ -230,24 +206,15 @@ impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for ItemExistsSMTCircuit<F
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commitment::poseidon_config;
     use crate::smt::{SparseMerkleTree, DEFAULT_DEPTH};
-    use ark_bn254::Fr;
     use ark_relations::r1cs::ConstraintSystem;
-
-    fn setup() -> Arc<PoseidonConfig<Fr>> {
-        Arc::new(poseidon_config())
-    }
 
     #[test]
     fn test_item_exists_valid() {
-        let config = setup();
-
         // Create inventory with item
-        let tree = SparseMerkleTree::<Fr>::from_items(
+        let tree = SparseMerkleTree::from_items(
             &[(42, 100)],
             DEFAULT_DEPTH,
-            config.clone(),
         );
         let root = tree.root();
         let proof = tree.get_proof(42);
@@ -264,7 +231,6 @@ mod tests {
             100, // actual_quantity
             50,  // min_quantity
             proof,
-            config.clone(),
         );
 
         let cs = ConstraintSystem::<Fr>::new_ref();
@@ -276,12 +242,9 @@ mod tests {
 
     #[test]
     fn test_item_exists_exact() {
-        let config = setup();
-
-        let tree = SparseMerkleTree::<Fr>::from_items(
+        let tree = SparseMerkleTree::from_items(
             &[(42, 100)],
             DEFAULT_DEPTH,
-            config.clone(),
         );
         let root = tree.root();
         let proof = tree.get_proof(42);
@@ -298,7 +261,6 @@ mod tests {
             100,
             100, // min = actual
             proof,
-            config.clone(),
         );
 
         let cs = ConstraintSystem::<Fr>::new_ref();
@@ -309,12 +271,9 @@ mod tests {
 
     #[test]
     fn test_item_exists_wrong_quantity() {
-        let config = setup();
-
-        let tree = SparseMerkleTree::<Fr>::from_items(
+        let tree = SparseMerkleTree::from_items(
             &[(42, 50)],
             DEFAULT_DEPTH,
-            config.clone(),
         );
         let root = tree.root();
         let proof = tree.get_proof(42);
@@ -331,7 +290,6 @@ mod tests {
             100, // Lying about actual quantity
             100,
             proof,
-            config.clone(),
         );
 
         let cs = ConstraintSystem::<Fr>::new_ref();
@@ -343,12 +301,9 @@ mod tests {
 
     #[test]
     fn test_item_exists_wrong_item() {
-        let config = setup();
-
-        let tree = SparseMerkleTree::<Fr>::from_items(
+        let tree = SparseMerkleTree::from_items(
             &[(42, 100)],
             DEFAULT_DEPTH,
-            config.clone(),
         );
         let root = tree.root();
         let proof = tree.get_proof(42); // Proof for item 42
@@ -365,7 +320,6 @@ mod tests {
             100,
             50,
             proof,
-            config.clone(),
         );
 
         let cs = ConstraintSystem::<Fr>::new_ref();

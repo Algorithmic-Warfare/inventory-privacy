@@ -5,14 +5,12 @@
 //!   cargo run --release --bin circuit-stats -- --time # Include proof timing (needs keys)
 
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Instant;
 
 use ark_bn254::Fr;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystem};
 
 use inventory_circuits::{
-    poseidon_config,
     CapacitySMTCircuit,
     ItemExistsSMTCircuit,
     StateTransitionCircuit,
@@ -38,9 +36,6 @@ fn main() {
     println!("║            INVENTORY PRIVACY CIRCUIT STATS               ║");
     println!("╚══════════════════════════════════════════════════════════╝\n");
 
-    // Build poseidon config
-    let config = Arc::new(poseidon_config::<Fr>());
-
     println!("SMT Depth: {}", DEFAULT_DEPTH);
     println!("Max Items: {}\n", 1u64 << DEFAULT_DEPTH);
 
@@ -49,15 +44,15 @@ fn main() {
     println!("─────────────────────────────────────────────────────────────\n");
 
     // StateTransition - use empty constructor
-    let state_circuit = StateTransitionCircuit::<Fr>::empty(config.clone());
+    let state_circuit = StateTransitionCircuit::empty();
     let state_count = count_constraints(state_circuit, "StateTransition");
 
     // ItemExists - use empty constructor
-    let item_circuit = ItemExistsSMTCircuit::<Fr>::empty(config.clone());
+    let item_circuit = ItemExistsSMTCircuit::empty();
     let item_count = count_constraints(item_circuit, "ItemExists");
 
     // Capacity - use empty constructor
-    let cap_circuit = CapacitySMTCircuit::<Fr>::empty(config.clone());
+    let cap_circuit = CapacitySMTCircuit::empty();
     let cap_count = count_constraints(cap_circuit, "CapacityProof");
 
     println!("\n─────────────────────────────────────────────────────────────");

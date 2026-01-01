@@ -612,6 +612,7 @@ dependencies = [
  "num-bigint",
  "num-traits",
  "rand",
+ "rayon",
 ]
 
 [[package]]
@@ -651,6 +652,7 @@ dependencies = [
  "hex",
  "inventory-circuits",
  "rand",
+ "rayon",
  "serde_json",
  "tempfile",
  "thiserror",

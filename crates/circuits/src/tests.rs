@@ -1,13 +1,10 @@
 //! Integration tests for SMT-based circuits.
 
-use std::sync::Arc;
-
 use ark_bn254::{Bn254, Fr};
 use ark_groth16::Groth16;
 use ark_snark::SNARK;
 use ark_std::rand::thread_rng;
 
-use crate::commitment::poseidon_config;
 use crate::signal::OpType;
 use crate::smt::{SparseMerkleTree, DEFAULT_DEPTH};
 use crate::state_transition::StateTransitionCircuit;
@@ -18,17 +15,15 @@ use crate::capacity_smt::CapacitySMTCircuit;
 #[test]
 fn test_state_transition_deposit_full_proof() {
     let mut rng = thread_rng();
-    let config = Arc::new(poseidon_config::<Fr>());
 
     // Setup
-    let empty_circuit = StateTransitionCircuit::empty(config.clone());
+    let empty_circuit = StateTransitionCircuit::empty();
     let (pk, vk) = Groth16::<Bn254>::circuit_specific_setup(empty_circuit, &mut rng).unwrap();
 
     // Create initial inventory
-    let mut tree = SparseMerkleTree::<Fr>::from_items(
+    let mut tree = SparseMerkleTree::from_items(
         &[(1, 100)],
         DEFAULT_DEPTH,
-        config.clone(),
     );
     let old_root = tree.root();
     let proof = tree.get_proof(1);
@@ -66,7 +61,6 @@ fn test_state_transition_deposit_full_proof() {
         max_capacity,
         nonce,
         inventory_id,
-        config.clone(),
     );
 
     let signal_hash = circuit.signal_hash.unwrap();
@@ -84,17 +78,15 @@ fn test_state_transition_deposit_full_proof() {
 #[test]
 fn test_state_transition_withdraw_full_proof() {
     let mut rng = thread_rng();
-    let config = Arc::new(poseidon_config::<Fr>());
 
     // Setup
-    let empty_circuit = StateTransitionCircuit::empty(config.clone());
+    let empty_circuit = StateTransitionCircuit::empty();
     let (pk, vk) = Groth16::<Bn254>::circuit_specific_setup(empty_circuit, &mut rng).unwrap();
 
     // Create initial inventory
-    let mut tree = SparseMerkleTree::<Fr>::from_items(
+    let mut tree = SparseMerkleTree::from_items(
         &[(1, 100)],
         DEFAULT_DEPTH,
-        config.clone(),
     );
     let old_root = tree.root();
     let proof = tree.get_proof(1);
@@ -131,7 +123,6 @@ fn test_state_transition_withdraw_full_proof() {
         max_capacity,
         nonce,
         inventory_id,
-        config.clone(),
     );
 
     let signal_hash = circuit.signal_hash.unwrap();
@@ -148,17 +139,15 @@ fn test_state_transition_withdraw_full_proof() {
 #[test]
 fn test_item_exists_smt_full_proof() {
     let mut rng = thread_rng();
-    let config = Arc::new(poseidon_config::<Fr>());
 
     // Setup
-    let empty_circuit = ItemExistsSMTCircuit::empty(config.clone());
+    let empty_circuit = ItemExistsSMTCircuit::empty();
     let (pk, vk) = Groth16::<Bn254>::circuit_specific_setup(empty_circuit, &mut rng).unwrap();
 
     // Create inventory
-    let tree = SparseMerkleTree::<Fr>::from_items(
+    let tree = SparseMerkleTree::from_items(
         &[(42, 100)],
         DEFAULT_DEPTH,
-        config.clone(),
     );
     let root = tree.root();
     let proof = tree.get_proof(42);
@@ -175,7 +164,6 @@ fn test_item_exists_smt_full_proof() {
         100, // actual_quantity
         50,  // min_quantity
         proof,
-        config.clone(),
     );
 
     let public_hash = circuit.public_hash.unwrap();
@@ -191,17 +179,15 @@ fn test_item_exists_smt_full_proof() {
 #[test]
 fn test_capacity_smt_full_proof() {
     let mut rng = thread_rng();
-    let config = Arc::new(poseidon_config::<Fr>());
 
     // Setup
-    let empty_circuit = CapacitySMTCircuit::empty(config.clone());
+    let empty_circuit = CapacitySMTCircuit::empty();
     let (pk, vk) = Groth16::<Bn254>::circuit_specific_setup(empty_circuit, &mut rng).unwrap();
 
     // Create inventory
-    let tree = SparseMerkleTree::<Fr>::from_items(
+    let tree = SparseMerkleTree::from_items(
         &[(1, 100), (2, 50)],
         DEFAULT_DEPTH,
-        config.clone(),
     );
     let root = tree.root();
 
@@ -214,7 +200,6 @@ fn test_capacity_smt_full_proof() {
         volume,
         blinding,
         max_capacity,
-        config.clone(),
     );
 
     let public_hash = circuit.public_hash.unwrap();
@@ -230,17 +215,15 @@ fn test_capacity_smt_full_proof() {
 #[test]
 fn test_invalid_proof_rejected() {
     let mut rng = thread_rng();
-    let config = Arc::new(poseidon_config::<Fr>());
 
     // Setup
-    let empty_circuit = ItemExistsSMTCircuit::empty(config.clone());
+    let empty_circuit = ItemExistsSMTCircuit::empty();
     let (pk, vk) = Groth16::<Bn254>::circuit_specific_setup(empty_circuit, &mut rng).unwrap();
 
     // Create valid proof
-    let tree = SparseMerkleTree::<Fr>::from_items(
+    let tree = SparseMerkleTree::from_items(
         &[(1, 100)],
         DEFAULT_DEPTH,
-        config.clone(),
     );
     let root = tree.root();
     let proof = tree.get_proof(1);
@@ -256,7 +239,6 @@ fn test_invalid_proof_rejected() {
         100,
         50,
         proof,
-        config.clone(),
     );
 
     let groth_proof = Groth16::<Bn254>::prove(&pk, circuit, &mut rng).unwrap();

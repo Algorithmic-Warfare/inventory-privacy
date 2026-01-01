@@ -16,7 +16,6 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use inventory_circuits::{
-    poseidon_config,
     signal::OpType,
     smt::{SparseMerkleTree, DEFAULT_DEPTH},
     smt_commitment::create_smt_commitment,
@@ -44,9 +43,8 @@ pub struct ItemRequest {
 
 /// Create an InventoryState from API request items
 fn parse_inventory_state(items: &[ItemRequest], volume: u64, blinding: Fr) -> InventoryState {
-    let config = Arc::new(poseidon_config::<Fr>());
     let pairs: Vec<(u64, u64)> = items.iter().map(|i| (i.item_id, i.quantity)).collect();
-    let tree = SparseMerkleTree::from_items(&pairs, DEFAULT_DEPTH, config);
+    let tree = SparseMerkleTree::from_items(&pairs, DEFAULT_DEPTH);
 
     InventoryState {
         tree,
@@ -375,16 +373,14 @@ pub async fn create_commitment(
         Err(e) => return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })).into_response(),
     };
 
-    let config = Arc::new(poseidon_config::<Fr>());
     let pairs: Vec<(u64, u64)> = req.inventory.iter().map(|i| (i.item_id, i.quantity)).collect();
-    let tree = SparseMerkleTree::from_items(&pairs, DEFAULT_DEPTH, config.clone());
+    let tree = SparseMerkleTree::from_items(&pairs, DEFAULT_DEPTH);
 
     let inventory_root = tree.root();
     let commitment = create_smt_commitment(
         inventory_root,
         req.current_volume,
         blinding,
-        &config,
     );
 
     (

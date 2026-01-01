@@ -26,10 +26,16 @@ rand = "0.8"
 thiserror = "1.0"
 hex = "0.4"
 serde_json = "1.0"
+rayon = "1.10"
 
 [dev-dependencies]
 tempfile = "3.0"
 
 [features]
-default = []
-parallel = ["inventory-circuits/parallel", "ark-groth16/parallel"]
+default = ["parallel"]
+parallel = [
+    "inventory-circuits/parallel",
+    "ark-ff/parallel",
+    "ark-std/parallel",
+    "ark-groth16/parallel",
+]

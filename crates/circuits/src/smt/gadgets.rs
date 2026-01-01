@@ -1,48 +1,41 @@
-//! In-circuit SMT verification gadgets.
+//! In-circuit SMT verification gadgets using Anemoi hash.
 //!
 //! These gadgets allow ZK circuits to verify Merkle proofs and update SMT roots.
+//! Uses Anemoi for ~2x constraint reduction compared to Poseidon.
 
-use ark_ff::PrimeField;
+use ark_bn254::Fr;
 use ark_r1cs_std::{
     prelude::*,
     fields::fp::FpVar,
     boolean::Boolean,
 };
 use ark_relations::r1cs::{ConstraintSystemRef, SynthesisError};
-use ark_crypto_primitives::sponge::poseidon::{
-    PoseidonConfig,
-    PoseidonSponge,
-    constraints::PoseidonSpongeVar,
-};
-use ark_crypto_primitives::sponge::{CryptographicSponge, constraints::CryptographicSpongeVar};
 
+use crate::anemoi::{anemoi_hash_two, anemoi_hash_two_var};
 use super::proof::MerkleProof;
 
-/// Compute the default leaf hash H(0, 0) natively (outside circuit).
-/// This is the hash of an empty slot and is constant for a given Poseidon config.
-/// Precomputing this saves ~300 constraints per verify_and_update call.
-pub fn compute_default_leaf_hash<F: PrimeField + ark_crypto_primitives::sponge::Absorb>(config: &PoseidonConfig<F>) -> F {
-    let inputs = vec![F::zero(), F::zero()];
-    let mut sponge = PoseidonSponge::new(config);
-    sponge.absorb(&inputs);
-    sponge.squeeze_field_elements(1)[0]
+/// Compute the default leaf hash H(0, 0) natively using Anemoi.
+/// This is the hash of an empty slot and is constant.
+/// Precomputing this saves constraints per verify_and_update call.
+pub fn compute_default_leaf_hash() -> Fr {
+    anemoi_hash_two(Fr::from(0u64), Fr::from(0u64))
 }
 
 /// Circuit variable representation of a Merkle proof.
 #[derive(Clone)]
-pub struct MerkleProofVar<F: PrimeField> {
+pub struct MerkleProofVar {
     /// Sibling hashes as circuit variables
-    path: Vec<FpVar<F>>,
+    path: Vec<FpVar<Fr>>,
 
     /// Direction booleans as circuit variables
-    indices: Vec<Boolean<F>>,
+    indices: Vec<Boolean<Fr>>,
 }
 
-impl<F: PrimeField> MerkleProofVar<F> {
+impl MerkleProofVar {
     /// Allocate a Merkle proof as witness variables.
     pub fn new_witness(
-        cs: ConstraintSystemRef<F>,
-        proof: &MerkleProof<F>,
+        cs: ConstraintSystemRef<Fr>,
+        proof: &MerkleProof<Fr>,
     ) -> Result<Self, SynthesisError> {
         let path = proof
             .path()
@@ -60,12 +53,12 @@ impl<F: PrimeField> MerkleProofVar<F> {
     }
 
     /// Get the path variables.
-    pub fn path(&self) -> &[FpVar<F>] {
+    pub fn path(&self) -> &[FpVar<Fr>] {
         &self.path
     }
 
     /// Get the indices variables.
-    pub fn indices(&self) -> &[Boolean<F>] {
+    pub fn indices(&self) -> &[Boolean<Fr>] {
         &self.indices
     }
 
@@ -75,39 +68,32 @@ impl<F: PrimeField> MerkleProofVar<F> {
     }
 }
 
-/// Hash two field elements using Poseidon in-circuit.
-pub fn hash_two<F: PrimeField>(
-    cs: ConstraintSystemRef<F>,
-    left: &FpVar<F>,
-    right: &FpVar<F>,
-    config: &PoseidonConfig<F>,
-) -> Result<FpVar<F>, SynthesisError> {
-    let mut sponge = PoseidonSpongeVar::new(cs, config);
-    let inputs = vec![left.clone(), right.clone()];
-    sponge.absorb(&inputs)?;
-    let result = sponge.squeeze_field_elements(1)?;
-    Ok(result[0].clone())
+/// Hash two field elements using Anemoi in-circuit.
+pub fn hash_two(
+    cs: ConstraintSystemRef<Fr>,
+    left: &FpVar<Fr>,
+    right: &FpVar<Fr>,
+) -> Result<FpVar<Fr>, SynthesisError> {
+    anemoi_hash_two_var(cs, left, right)
 }
 
-/// Hash a leaf (item_id, quantity) using Poseidon in-circuit.
-pub fn hash_leaf<F: PrimeField>(
-    cs: ConstraintSystemRef<F>,
-    item_id: &FpVar<F>,
-    quantity: &FpVar<F>,
-    config: &PoseidonConfig<F>,
-) -> Result<FpVar<F>, SynthesisError> {
-    hash_two(cs, item_id, quantity, config)
+/// Hash a leaf (item_id, quantity) using Anemoi in-circuit.
+pub fn hash_leaf(
+    cs: ConstraintSystemRef<Fr>,
+    item_id: &FpVar<Fr>,
+    quantity: &FpVar<Fr>,
+) -> Result<FpVar<Fr>, SynthesisError> {
+    hash_two(cs, item_id, quantity)
 }
 
 /// Compute the root hash from a leaf and Merkle path in-circuit.
 ///
 /// This is the core membership verification gadget.
-pub fn compute_root_from_path<F: PrimeField>(
-    cs: ConstraintSystemRef<F>,
-    leaf_hash: &FpVar<F>,
-    proof: &MerkleProofVar<F>,
-    config: &PoseidonConfig<F>,
-) -> Result<FpVar<F>, SynthesisError> {
+pub fn compute_root_from_path(
+    cs: ConstraintSystemRef<Fr>,
+    leaf_hash: &FpVar<Fr>,
+    proof: &MerkleProofVar,
+) -> Result<FpVar<Fr>, SynthesisError> {
     let mut current = leaf_hash.clone();
 
     for (sibling, is_right) in proof.path.iter().zip(proof.indices.iter()) {
@@ -115,7 +101,7 @@ pub fn compute_root_from_path<F: PrimeField>(
         let left = is_right.select(sibling, &current)?;
         let right = is_right.select(&current, sibling)?;
 
-        current = hash_two(cs.clone(), &left, &right, config)?;
+        current = hash_two(cs.clone(), &left, &right)?;
     }
 
     Ok(current)
@@ -124,19 +110,18 @@ pub fn compute_root_from_path<F: PrimeField>(
 /// Verify that a leaf with given item_id and quantity exists in the tree with given root.
 ///
 /// This constrains: compute_root(H(item_id, quantity), proof) == expected_root
-pub fn verify_membership<F: PrimeField>(
-    cs: ConstraintSystemRef<F>,
-    expected_root: &FpVar<F>,
-    item_id: &FpVar<F>,
-    quantity: &FpVar<F>,
-    proof: &MerkleProofVar<F>,
-    config: &PoseidonConfig<F>,
+pub fn verify_membership(
+    cs: ConstraintSystemRef<Fr>,
+    expected_root: &FpVar<Fr>,
+    item_id: &FpVar<Fr>,
+    quantity: &FpVar<Fr>,
+    proof: &MerkleProofVar,
 ) -> Result<(), SynthesisError> {
     // Compute leaf hash
-    let leaf_hash = hash_leaf(cs.clone(), item_id, quantity, config)?;
+    let leaf_hash = hash_leaf(cs.clone(), item_id, quantity)?;
 
     // Compute root from proof
-    let computed_root = compute_root_from_path(cs, &leaf_hash, proof, config)?;
+    let computed_root = compute_root_from_path(cs, &leaf_hash, proof)?;
 
     // Enforce equality
     computed_root.enforce_equal(expected_root)?;
@@ -152,40 +137,35 @@ pub fn verify_membership<F: PrimeField>(
 /// the default leaf hash H(0, 0) instead of H(item_id, 0). This allows
 /// adding new items to empty slots.
 ///
-/// The `default_leaf_hash` parameter should be precomputed using
-/// `compute_default_leaf_hash()` to save ~300 constraints.
-///
 /// Returns the new root after setting the leaf to new_quantity.
-pub fn verify_and_update<F: PrimeField>(
-    cs: ConstraintSystemRef<F>,
-    old_root: &FpVar<F>,
-    item_id: &FpVar<F>,
-    old_quantity: &FpVar<F>,
-    new_quantity: &FpVar<F>,
-    proof: &MerkleProofVar<F>,
-    default_leaf_hash: F,
-    config: &PoseidonConfig<F>,
-) -> Result<FpVar<F>, SynthesisError> {
+pub fn verify_and_update(
+    cs: ConstraintSystemRef<Fr>,
+    old_root: &FpVar<Fr>,
+    item_id: &FpVar<Fr>,
+    old_quantity: &FpVar<Fr>,
+    new_quantity: &FpVar<Fr>,
+    proof: &MerkleProofVar,
+) -> Result<FpVar<Fr>, SynthesisError> {
     // For insertions (old_quantity == 0), use precomputed default leaf hash H(0, 0)
     // For updates (old_quantity > 0), use regular hash H(item_id, old_quantity)
     let zero = FpVar::zero();
     let is_insertion = old_quantity.is_eq(&zero)?;
 
     // Use precomputed constant instead of computing hash_leaf(0, 0) in-circuit
-    let default_leaf_hash_var = FpVar::constant(default_leaf_hash);
-    let regular_old_hash = hash_leaf(cs.clone(), item_id, old_quantity, config)?;
+    let default_leaf_hash_var = FpVar::constant(compute_default_leaf_hash());
+    let regular_old_hash = hash_leaf(cs.clone(), item_id, old_quantity)?;
 
     let old_leaf_hash = is_insertion.select(&default_leaf_hash_var, &regular_old_hash)?;
 
     // Verify old state
-    let computed_old_root = compute_root_from_path(cs.clone(), &old_leaf_hash, proof, config)?;
+    let computed_old_root = compute_root_from_path(cs.clone(), &old_leaf_hash, proof)?;
     computed_old_root.enforce_equal(old_root)?;
 
     // Compute new leaf hash (always uses item_id)
-    let new_leaf_hash = hash_leaf(cs.clone(), item_id, new_quantity, config)?;
+    let new_leaf_hash = hash_leaf(cs.clone(), item_id, new_quantity)?;
 
     // Compute new root using the same path (siblings unchanged)
-    let new_root = compute_root_from_path(cs, &new_leaf_hash, proof, config)?;
+    let new_root = compute_root_from_path(cs, &new_leaf_hash, proof)?;
 
     Ok(new_root)
 }
@@ -193,34 +173,25 @@ pub fn verify_and_update<F: PrimeField>(
 /// Verify that an item is NOT in the tree (quantity = 0).
 ///
 /// This proves non-membership by showing the leaf at item_id is empty.
-pub fn verify_non_membership<F: PrimeField>(
-    cs: ConstraintSystemRef<F>,
-    expected_root: &FpVar<F>,
-    item_id: &FpVar<F>,
-    proof: &MerkleProofVar<F>,
-    config: &PoseidonConfig<F>,
+pub fn verify_non_membership(
+    cs: ConstraintSystemRef<Fr>,
+    expected_root: &FpVar<Fr>,
+    item_id: &FpVar<Fr>,
+    proof: &MerkleProofVar,
 ) -> Result<(), SynthesisError> {
     let zero = FpVar::zero();
-    verify_membership(cs, expected_root, item_id, &zero, proof, config)
+    verify_membership(cs, expected_root, item_id, &zero, proof)
 }
 
 #[cfg(test)]
 mod gadget_tests {
     use super::*;
-    use crate::commitment::poseidon_config;
     use crate::smt::{SparseMerkleTree, DEFAULT_DEPTH};
-    use ark_bn254::Fr;
     use ark_relations::r1cs::ConstraintSystem;
-    use std::sync::Arc;
-
-    fn setup() -> Arc<PoseidonConfig<Fr>> {
-        Arc::new(poseidon_config())
-    }
 
     #[test]
     fn test_verify_membership_valid() {
-        let config = setup();
-        let mut tree = SparseMerkleTree::<Fr>::new(DEFAULT_DEPTH, config.clone());
+        let mut tree = SparseMerkleTree::new(DEFAULT_DEPTH);
 
         tree.update(1, 100);
         tree.update(42, 50);
@@ -244,7 +215,6 @@ mod gadget_tests {
             &item_id_var,
             &quantity_var,
             &proof_var,
-            &config,
         )
         .unwrap();
 
@@ -253,8 +223,7 @@ mod gadget_tests {
 
     #[test]
     fn test_verify_membership_wrong_quantity() {
-        let config = setup();
-        let mut tree = SparseMerkleTree::<Fr>::new(DEFAULT_DEPTH, config.clone());
+        let mut tree = SparseMerkleTree::new(DEFAULT_DEPTH);
 
         tree.update(1, 100);
         let root = tree.root();
@@ -274,7 +243,6 @@ mod gadget_tests {
             &item_id_var,
             &quantity_var,
             &proof_var,
-            &config,
         )
         .unwrap();
 
@@ -284,8 +252,7 @@ mod gadget_tests {
 
     #[test]
     fn test_verify_and_update() {
-        let config = setup();
-        let mut tree = SparseMerkleTree::<Fr>::new(DEFAULT_DEPTH, config.clone());
+        let mut tree = SparseMerkleTree::new(DEFAULT_DEPTH);
 
         tree.update(1, 100);
         let old_root = tree.root();
@@ -303,9 +270,6 @@ mod gadget_tests {
         let new_qty_var = FpVar::new_witness(cs.clone(), || Ok(Fr::from(150u64))).unwrap();
         let proof_var = MerkleProofVar::new_witness(cs.clone(), &proof).unwrap();
 
-        // Precompute default leaf hash
-        let default_leaf_hash = compute_default_leaf_hash(&config);
-
         let computed_new_root = verify_and_update(
             cs.clone(),
             &old_root_var,
@@ -313,8 +277,6 @@ mod gadget_tests {
             &old_qty_var,
             &new_qty_var,
             &proof_var,
-            default_leaf_hash,
-            &config,
         )
         .unwrap();
 
@@ -327,8 +289,7 @@ mod gadget_tests {
 
     #[test]
     fn test_constraint_count() {
-        let config = setup();
-        let mut tree = SparseMerkleTree::<Fr>::new(DEFAULT_DEPTH, config.clone());
+        let mut tree = SparseMerkleTree::new(DEFAULT_DEPTH);
 
         tree.update(1, 100);
         let root = tree.root();
@@ -347,20 +308,19 @@ mod gadget_tests {
             &item_id_var,
             &quantity_var,
             &proof_var,
-            &config,
         )
         .unwrap();
 
         let num_constraints = cs.num_constraints();
-        println!("SMT membership verification constraints (depth {}): {}", DEFAULT_DEPTH, num_constraints);
+        println!("Anemoi SMT membership verification constraints (depth {}): {}", DEFAULT_DEPTH, num_constraints);
 
-        // With depth 12, expect roughly:
-        // - 1 leaf hash: ~300 constraints
-        // - 12 node hashes: 12 * 300 = 3600 constraints
-        // Total: ~3900 constraints
+        // With Anemoi and depth 12, expect roughly:
+        // - 1 leaf hash: ~126 constraints
+        // - 12 node hashes: 12 * 126 = 1512 constraints
+        // Total: ~1638 constraints (vs ~3900 with Poseidon)
         assert!(
-            num_constraints < 5000,
-            "Too many constraints: {}. Expected < 5000 for depth {}",
+            num_constraints < 2500,
+            "Too many constraints: {}. Expected < 2500 for depth {}",
             num_constraints,
             DEFAULT_DEPTH
         );

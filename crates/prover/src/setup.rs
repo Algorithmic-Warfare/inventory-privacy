@@ -1,16 +1,14 @@
 //! Trusted setup utilities for generating proving and verifying keys.
 
-use std::sync::Arc;
-
-use ark_bn254::{Bn254, Fr};
+use ark_bn254::Bn254;
 use ark_groth16::{Groth16, ProvingKey, VerifyingKey};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_snark::SNARK;
-use ark_std::rand::{rngs::StdRng, SeedableRng};
+use ark_std::rand::rngs::StdRng;
 use thiserror::Error;
 
 use inventory_circuits::{
-    poseidon_config, CapacitySMTCircuit, ItemExistsSMTCircuit, StateTransitionCircuit,
+    CapacitySMTCircuit, ItemExistsSMTCircuit, StateTransitionCircuit,
 };
 
 /// Errors that can occur during setup
@@ -136,17 +134,16 @@ impl CircuitKeys {
 /// Run trusted setup for all SMT circuits
 pub fn setup_all_circuits() -> Result<CircuitKeys, SetupError> {
     // Use a fixed seed for reproducible setup (in production, use secure randomness)
-    let mut rng = StdRng::seed_from_u64(42);
-    let config = Arc::new(poseidon_config::<Fr>());
+    let mut rng = ark_std::rand::SeedableRng::seed_from_u64(42);
 
     println!("Setting up StateTransitionCircuit...");
-    let state_transition = setup_state_transition(&mut rng, config.clone())?;
+    let state_transition = setup_state_transition(&mut rng)?;
 
     println!("Setting up ItemExistsSMTCircuit...");
-    let item_exists = setup_item_exists(&mut rng, config.clone())?;
+    let item_exists = setup_item_exists(&mut rng)?;
 
     println!("Setting up CapacitySMTCircuit...");
-    let capacity = setup_capacity(&mut rng, config)?;
+    let capacity = setup_capacity(&mut rng)?;
 
     Ok(CircuitKeys {
         state_transition,
@@ -158,9 +155,8 @@ pub fn setup_all_circuits() -> Result<CircuitKeys, SetupError> {
 /// Setup StateTransitionCircuit
 pub fn setup_state_transition(
     rng: &mut StdRng,
-    config: Arc<ark_crypto_primitives::sponge::poseidon::PoseidonConfig<Fr>>,
 ) -> Result<CircuitKeyPair, SetupError> {
-    let circuit = StateTransitionCircuit::empty(config);
+    let circuit = StateTransitionCircuit::empty();
     let (pk, vk) = Groth16::<Bn254>::circuit_specific_setup(circuit, rng)
         .map_err(|e| SetupError::CircuitSetup(e.to_string()))?;
 
@@ -173,9 +169,8 @@ pub fn setup_state_transition(
 /// Setup ItemExistsSMTCircuit
 pub fn setup_item_exists(
     rng: &mut StdRng,
-    config: Arc<ark_crypto_primitives::sponge::poseidon::PoseidonConfig<Fr>>,
 ) -> Result<CircuitKeyPair, SetupError> {
-    let circuit = ItemExistsSMTCircuit::empty(config);
+    let circuit = ItemExistsSMTCircuit::empty();
     let (pk, vk) = Groth16::<Bn254>::circuit_specific_setup(circuit, rng)
         .map_err(|e| SetupError::CircuitSetup(e.to_string()))?;
 
@@ -188,9 +183,8 @@ pub fn setup_item_exists(
 /// Setup CapacitySMTCircuit
 pub fn setup_capacity(
     rng: &mut StdRng,
-    config: Arc<ark_crypto_primitives::sponge::poseidon::PoseidonConfig<Fr>>,
 ) -> Result<CircuitKeyPair, SetupError> {
-    let circuit = CapacitySMTCircuit::empty(config);
+    let circuit = CapacitySMTCircuit::empty();
     let (pk, vk) = Groth16::<Bn254>::circuit_specific_setup(circuit, rng)
         .map_err(|e| SetupError::CircuitSetup(e.to_string()))?;
 
@@ -203,12 +197,12 @@ pub fn setup_capacity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ark_std::rand::SeedableRng;
 
     #[test]
     fn test_setup_state_transition() {
         let mut rng = StdRng::seed_from_u64(42);
-        let config = Arc::new(poseidon_config::<Fr>());
-        let keys = setup_state_transition(&mut rng, config).unwrap();
+        let keys = setup_state_transition(&mut rng).unwrap();
 
         // Verify keys can be serialized and deserialized
         let pk_bytes = keys.serialize_pk().unwrap();
@@ -221,8 +215,7 @@ mod tests {
     #[test]
     fn test_setup_item_exists() {
         let mut rng = StdRng::seed_from_u64(42);
-        let config = Arc::new(poseidon_config::<Fr>());
-        let keys = setup_item_exists(&mut rng, config).unwrap();
+        let keys = setup_item_exists(&mut rng).unwrap();
 
         let pk_bytes = keys.serialize_pk().unwrap();
         let vk_bytes = keys.serialize_vk().unwrap();
@@ -234,8 +227,7 @@ mod tests {
     #[test]
     fn test_setup_capacity() {
         let mut rng = StdRng::seed_from_u64(42);
-        let config = Arc::new(poseidon_config::<Fr>());
-        let keys = setup_capacity(&mut rng, config).unwrap();
+        let keys = setup_capacity(&mut rng).unwrap();
 
         let pk_bytes = keys.serialize_pk().unwrap();
         let vk_bytes = keys.serialize_vk().unwrap();

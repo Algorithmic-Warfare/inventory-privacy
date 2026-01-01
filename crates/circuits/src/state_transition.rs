@@ -4,7 +4,7 @@
 //! It combines the functionality of the old deposit, withdraw, and capacity circuits.
 //!
 //! Public inputs:
-//! - signal_hash: Poseidon hash binding all operation parameters
+//! - signal_hash: Anemoi hash binding all operation parameters
 //! - nonce: Replay protection (verified on-chain against inventory.nonce)
 //! - inventory_id: Cross-inventory protection (verified on-chain)
 //! - registry_root: Volume registry commitment (verified against VolumeRegistry)
@@ -17,48 +17,44 @@
 //! - Registry proof for item volume lookup
 //! - Operation parameters (amount, op_type, max_capacity)
 
-use ark_crypto_primitives::sponge::poseidon::PoseidonConfig;
-use ark_crypto_primitives::sponge::Absorb;
-use ark_ff::PrimeField;
+use ark_bn254::Fr;
 use ark_r1cs_std::fields::fp::FpVar;
 use ark_r1cs_std::prelude::*;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
-use std::marker::PhantomData;
-use std::sync::Arc;
 
 use crate::range_check::{enforce_geq, enforce_u32_range};
 use crate::signal::{compute_signal_hash, OpType};
-use crate::smt::{verify_and_update, compute_default_leaf_hash, MerkleProof, MerkleProofVar};
-use crate::smt_commitment::create_smt_commitment_var;
+use crate::smt::{verify_and_update, MerkleProof, MerkleProofVar};
+use crate::smt_commitment::{create_smt_commitment, create_smt_commitment_var};
 
 /// State Transition Circuit.
 ///
 /// Proves a valid deposit or withdrawal operation with capacity checking.
 #[derive(Clone)]
-pub struct StateTransitionCircuit<F: PrimeField + Absorb> {
+pub struct StateTransitionCircuit {
     // Public inputs
     /// Expected signal hash (binds all parameters)
-    pub signal_hash: Option<F>,
+    pub signal_hash: Option<Fr>,
     /// Nonce for replay protection (verified on-chain)
     pub nonce: Option<u64>,
     /// Inventory ID for cross-inventory protection (verified on-chain)
-    pub inventory_id: Option<F>,
+    pub inventory_id: Option<Fr>,
 
     // Old state witnesses
     /// Old inventory SMT root
-    pub old_inventory_root: Option<F>,
+    pub old_inventory_root: Option<Fr>,
     /// Old total volume
     pub old_volume: Option<u64>,
     /// Old blinding factor
-    pub old_blinding: Option<F>,
+    pub old_blinding: Option<Fr>,
 
     // New state witnesses
     /// New inventory SMT root
-    pub new_inventory_root: Option<F>,
+    pub new_inventory_root: Option<Fr>,
     /// New total volume
     pub new_volume: Option<u64>,
     /// New blinding factor
-    pub new_blinding: Option<F>,
+    pub new_blinding: Option<Fr>,
 
     // Item operation witnesses
     /// Item ID being operated on
@@ -74,46 +70,41 @@ pub struct StateTransitionCircuit<F: PrimeField + Absorb> {
 
     // Merkle proof
     /// Proof for item in inventory SMT
-    pub inventory_proof: Option<MerkleProof<F>>,
+    pub inventory_proof: Option<MerkleProof<Fr>>,
 
     // Registry witnesses (for volume lookup)
     /// Volume per unit of this item type
     pub item_volume: Option<u64>,
     /// Registry root (commitment to volume table)
-    pub registry_root: Option<F>,
+    pub registry_root: Option<Fr>,
 
     // Capacity
     /// Maximum allowed capacity
     pub max_capacity: Option<u64>,
-
-    /// Poseidon configuration
-    pub poseidon_config: Arc<PoseidonConfig<F>>,
-
-    _marker: PhantomData<F>,
 }
 
-impl<F: PrimeField + Absorb> StateTransitionCircuit<F> {
+impl StateTransitionCircuit {
     /// Create a new empty circuit for setup.
     /// Uses dummy values that produce valid constraint structure.
-    pub fn empty(poseidon_config: Arc<PoseidonConfig<F>>) -> Self {
+    pub fn empty() -> Self {
         use crate::smt::DEFAULT_DEPTH;
 
         // Create dummy proof with correct depth
         let dummy_proof = MerkleProof::new(
-            vec![F::zero(); DEFAULT_DEPTH],
+            vec![Fr::from(0u64); DEFAULT_DEPTH],
             vec![false; DEFAULT_DEPTH],
         );
 
         Self {
-            signal_hash: Some(F::zero()),
+            signal_hash: Some(Fr::from(0u64)),
             nonce: Some(0),
-            inventory_id: Some(F::zero()),
-            old_inventory_root: Some(F::zero()),
+            inventory_id: Some(Fr::from(0u64)),
+            old_inventory_root: Some(Fr::from(0u64)),
             old_volume: Some(0),
-            old_blinding: Some(F::zero()),
-            new_inventory_root: Some(F::zero()),
+            old_blinding: Some(Fr::from(0u64)),
+            new_inventory_root: Some(Fr::from(0u64)),
             new_volume: Some(0),
-            new_blinding: Some(F::zero()),
+            new_blinding: Some(Fr::from(0u64)),
             item_id: Some(0),
             old_quantity: Some(0),
             new_quantity: Some(0),
@@ -121,47 +112,42 @@ impl<F: PrimeField + Absorb> StateTransitionCircuit<F> {
             op_type: Some(OpType::Deposit),
             inventory_proof: Some(dummy_proof),
             item_volume: Some(0),
-            registry_root: Some(F::zero()),
+            registry_root: Some(Fr::from(0u64)),
             max_capacity: Some(0),
-            poseidon_config,
-            _marker: PhantomData,
         }
     }
 
     /// Create a new circuit with all witnesses.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        old_inventory_root: F,
+        old_inventory_root: Fr,
         old_volume: u64,
-        old_blinding: F,
-        new_inventory_root: F,
+        old_blinding: Fr,
+        new_inventory_root: Fr,
         new_volume: u64,
-        new_blinding: F,
+        new_blinding: Fr,
         item_id: u64,
         old_quantity: u64,
         new_quantity: u64,
         amount: u64,
         op_type: OpType,
-        inventory_proof: MerkleProof<F>,
+        inventory_proof: MerkleProof<Fr>,
         item_volume: u64,
-        registry_root: F,
+        registry_root: Fr,
         max_capacity: u64,
         nonce: u64,
-        inventory_id: F,
-        poseidon_config: Arc<PoseidonConfig<F>>,
+        inventory_id: Fr,
     ) -> Self {
-        // Compute commitments
-        let old_commitment = crate::smt_commitment::create_smt_commitment(
+        // Compute commitments using Anemoi
+        let old_commitment = create_smt_commitment(
             old_inventory_root,
             old_volume,
             old_blinding,
-            &poseidon_config,
         );
-        let new_commitment = crate::smt_commitment::create_smt_commitment(
+        let new_commitment = create_smt_commitment(
             new_inventory_root,
             new_volume,
             new_blinding,
-            &poseidon_config,
         );
 
         // Compute signal hash (includes nonce and inventory_id for replay/cross-inventory protection)
@@ -175,7 +161,6 @@ impl<F: PrimeField + Absorb> StateTransitionCircuit<F> {
             op_type,
             nonce,
             inventory_id,
-            &poseidon_config,
         );
 
         Self {
@@ -197,14 +182,12 @@ impl<F: PrimeField + Absorb> StateTransitionCircuit<F> {
             item_volume: Some(item_volume),
             registry_root: Some(registry_root),
             max_capacity: Some(max_capacity),
-            poseidon_config,
-            _marker: PhantomData,
         }
     }
 }
 
-impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for StateTransitionCircuit<F> {
-    fn generate_constraints(self, cs: ConstraintSystemRef<F>) -> Result<(), SynthesisError> {
+impl ConstraintSynthesizer<Fr> for StateTransitionCircuit {
+    fn generate_constraints(self, cs: ConstraintSystemRef<Fr>) -> Result<(), SynthesisError> {
         // === Allocate public inputs ===
         // Order matters: signal_hash, nonce, inventory_id, registry_root
         let signal_hash_var = FpVar::new_input(cs.clone(), || {
@@ -212,7 +195,7 @@ impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for StateTransitionCircuit
         })?;
         let nonce_var = FpVar::new_input(cs.clone(), || {
             self.nonce
-                .map(F::from)
+                .map(Fr::from)
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
         let inventory_id_var = FpVar::new_input(cs.clone(), || {
@@ -225,7 +208,7 @@ impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for StateTransitionCircuit
         })?;
         let old_volume_var = FpVar::new_witness(cs.clone(), || {
             self.old_volume
-                .map(F::from)
+                .map(Fr::from)
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
         let old_blinding_var = FpVar::new_witness(cs.clone(), || {
@@ -238,7 +221,7 @@ impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for StateTransitionCircuit
         })?;
         let new_volume_var = FpVar::new_witness(cs.clone(), || {
             self.new_volume
-                .map(F::from)
+                .map(Fr::from)
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
         let new_blinding_var = FpVar::new_witness(cs.clone(), || {
@@ -248,27 +231,27 @@ impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for StateTransitionCircuit
         // === Allocate item operation witnesses ===
         let item_id_var = FpVar::new_witness(cs.clone(), || {
             self.item_id
-                .map(F::from)
+                .map(Fr::from)
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
         let old_qty_var = FpVar::new_witness(cs.clone(), || {
             self.old_quantity
-                .map(F::from)
+                .map(Fr::from)
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
         let new_qty_var = FpVar::new_witness(cs.clone(), || {
             self.new_quantity
-                .map(F::from)
+                .map(Fr::from)
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
         let amount_var = FpVar::new_witness(cs.clone(), || {
             self.amount
-                .map(F::from)
+                .map(Fr::from)
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
         let op_type_var = FpVar::new_witness(cs.clone(), || {
             self.op_type
-                .map(|op| op.to_field::<F>())
+                .map(|op| op.to_field())
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
 
@@ -285,19 +268,17 @@ impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for StateTransitionCircuit
         // === Allocate registry witnesses ===
         let item_volume_var = FpVar::new_witness(cs.clone(), || {
             self.item_volume
-                .map(F::from)
+                .map(Fr::from)
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
         let max_capacity_var = FpVar::new_witness(cs.clone(), || {
             self.max_capacity
-                .map(F::from)
+                .map(Fr::from)
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
 
         // === Constraint 1: Verify and update inventory SMT ===
         // This verifies the old state and computes the new root
-        // Precompute default leaf hash outside circuit to save ~300 constraints
-        let default_leaf_hash = compute_default_leaf_hash(&self.poseidon_config);
         let computed_new_root = verify_and_update(
             cs.clone(),
             &old_root_var,
@@ -305,8 +286,6 @@ impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for StateTransitionCircuit
             &old_qty_var,
             &new_qty_var,
             &inventory_proof_var,
-            default_leaf_hash,
-            &self.poseidon_config,
         )?;
 
         // Enforce computed new root matches claimed new root
@@ -352,13 +331,12 @@ impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for StateTransitionCircuit
         // enforce_geq checks that (max_capacity - new_volume) fits in 32 bits
         enforce_geq(cs.clone(), &max_capacity_var, &new_volume_var)?;
 
-        // === Constraint 7: Compute commitments ===
+        // === Constraint 7: Compute commitments using Anemoi ===
         let old_commitment_var = create_smt_commitment_var(
             cs.clone(),
             &old_root_var,
             &old_volume_var,
             &old_blinding_var,
-            &self.poseidon_config,
         )?;
 
         let new_commitment_var = create_smt_commitment_var(
@@ -366,7 +344,6 @@ impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for StateTransitionCircuit
             &new_root_var,
             &new_volume_var,
             &new_blinding_var,
-            &self.poseidon_config,
         )?;
 
         // === Constraint 8: Compute and verify signal hash ===
@@ -382,7 +359,6 @@ impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for StateTransitionCircuit
             &op_type_var,
             &nonce_var,
             &inventory_id_var,
-            &self.poseidon_config,
         )?;
 
         computed_signal.enforce_equal(&signal_hash_var)?;
@@ -399,24 +375,15 @@ impl<F: PrimeField + Absorb> ConstraintSynthesizer<F> for StateTransitionCircuit
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commitment::poseidon_config;
     use crate::smt::{SparseMerkleTree, DEFAULT_DEPTH};
-    use ark_bn254::Fr;
     use ark_relations::r1cs::ConstraintSystem;
-
-    fn setup() -> Arc<PoseidonConfig<Fr>> {
-        Arc::new(poseidon_config())
-    }
 
     #[test]
     fn test_state_transition_deposit() {
-        let config = setup();
-
         // Create initial inventory with 1 item
-        let mut tree = SparseMerkleTree::<Fr>::from_items(
+        let mut tree = SparseMerkleTree::from_items(
             &[(1, 100)],
             DEFAULT_DEPTH,
-            config.clone(),
         );
         let old_root = tree.root();
         let proof = tree.get_proof(1);
@@ -455,7 +422,6 @@ mod tests {
             max_capacity,
             nonce,
             inventory_id,
-            config.clone(),
         );
 
         let cs = ConstraintSystem::<Fr>::new_ref();
@@ -467,13 +433,10 @@ mod tests {
 
     #[test]
     fn test_state_transition_withdraw() {
-        let config = setup();
-
         // Create initial inventory with 1 item
-        let mut tree = SparseMerkleTree::<Fr>::from_items(
+        let mut tree = SparseMerkleTree::from_items(
             &[(1, 100)],
             DEFAULT_DEPTH,
-            config.clone(),
         );
         let old_root = tree.root();
         let proof = tree.get_proof(1);
@@ -511,7 +474,6 @@ mod tests {
             max_capacity,
             nonce,
             inventory_id,
-            config.clone(),
         );
 
         let cs = ConstraintSystem::<Fr>::new_ref();
@@ -523,10 +485,8 @@ mod tests {
 
     #[test]
     fn test_state_transition_new_item() {
-        let config = setup();
-
         // Create empty inventory
-        let mut tree = SparseMerkleTree::<Fr>::new(DEFAULT_DEPTH, config.clone());
+        let mut tree = SparseMerkleTree::new(DEFAULT_DEPTH);
         let old_root = tree.root();
         let proof = tree.get_proof(42); // Proof for empty slot
 
@@ -562,7 +522,6 @@ mod tests {
             max_capacity,
             nonce,
             inventory_id,
-            config.clone(),
         );
 
         let cs = ConstraintSystem::<Fr>::new_ref();
@@ -574,12 +533,9 @@ mod tests {
 
     #[test]
     fn test_state_transition_wrong_amount() {
-        let config = setup();
-
-        let mut tree = SparseMerkleTree::<Fr>::from_items(
+        let mut tree = SparseMerkleTree::from_items(
             &[(1, 100)],
             DEFAULT_DEPTH,
-            config.clone(),
         );
         let old_root = tree.root();
         let proof = tree.get_proof(1);
@@ -616,7 +572,6 @@ mod tests {
             max_capacity,
             nonce,
             inventory_id,
-            config.clone(),
         );
 
         let cs = ConstraintSystem::<Fr>::new_ref();
@@ -628,12 +583,9 @@ mod tests {
 
     #[test]
     fn test_state_transition_wrong_volume() {
-        let config = setup();
-
-        let mut tree = SparseMerkleTree::<Fr>::from_items(
+        let mut tree = SparseMerkleTree::from_items(
             &[(1, 100)],
             DEFAULT_DEPTH,
-            config.clone(),
         );
         let old_root = tree.root();
         let proof = tree.get_proof(1);
@@ -669,7 +621,6 @@ mod tests {
             max_capacity,
             nonce,
             inventory_id,
-            config.clone(),
         );
 
         let cs = ConstraintSystem::<Fr>::new_ref();
@@ -682,29 +633,17 @@ mod tests {
     #[test]
     fn test_underflow_attack_blocked() {
         // This test verifies that the range check prevents underflow attacks
-        let config = setup();
-
-        let mut tree = SparseMerkleTree::<Fr>::from_items(
+        let mut tree = SparseMerkleTree::from_items(
             &[(1, 50)],  // Only have 50 items
             DEFAULT_DEPTH,
-            config.clone(),
         );
-        let old_root = tree.root();
-        let proof = tree.get_proof(1);
+        let _old_root = tree.root();
+        let _proof = tree.get_proof(1);
 
         // Attacker tries to withdraw 100 when only 50 exist
         // Without range checks, 50 - 100 would wrap to a huge number
         tree.update(1, 0); // Pretend we end up with 0 (invalid)
-        let new_root = tree.root();
-
-        let old_blinding = Fr::from(12345u64);
-        let new_blinding = Fr::from(67890u64);
-        let item_volume = 10u64;
-        let old_volume = 50 * item_volume;
-        let registry_root = Fr::from(99999u64);
-        let max_capacity = 10000u64;
-        let nonce = 0u64;
-        let inventory_id = Fr::from(12345678u64);
+        let _new_root = tree.root();
 
         // The new_quantity would be 50 - 100 = -50, which wraps in field arithmetic
         // But our range check should catch this

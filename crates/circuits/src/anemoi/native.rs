@@ -119,6 +119,37 @@ pub fn anemoi_hash(input: Fr) -> Fr {
     anemoi_hash_two(input, Fr::from(0u64))
 }
 
+/// Hash multiple field elements using Anemoi in sponge-like mode.
+///
+/// This absorbs inputs in pairs and produces a single output.
+/// For n inputs, we compute:
+/// - h0 = H(inputs[0], inputs[1])
+/// - h1 = H(h0, inputs[2])
+/// - h2 = H(h1, inputs[3])
+/// - ... and so on
+///
+/// If the number of inputs is odd, the last input is paired with the
+/// running hash.
+pub fn anemoi_hash_many(inputs: &[Fr]) -> Fr {
+    if inputs.is_empty() {
+        return anemoi_hash_two(Fr::from(0u64), Fr::from(0u64));
+    }
+
+    if inputs.len() == 1 {
+        return anemoi_hash(inputs[0]);
+    }
+
+    // Start with first two inputs
+    let mut acc = anemoi_hash_two(inputs[0], inputs[1]);
+
+    // Absorb remaining inputs one at a time
+    for input in inputs.iter().skip(2) {
+        acc = anemoi_hash_two(acc, *input);
+    }
+
+    acc
+}
+
 #[cfg(test)]
 mod native_tests {
     use super::*;

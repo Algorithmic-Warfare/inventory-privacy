@@ -23,5 +23,5 @@ hex = "0.4"
 thiserror = "1.0"
 
 [features]
-default = []
-parallel = ["inventory-prover/parallel"]
+default = ["parallel"]
+parallel = ["inventory-prover/parallel", "inventory-circuits/parallel"]

@@ -75,36 +75,21 @@ fn test_anemoi_collision_resistance() {
 }
 
 #[test]
-fn test_anemoi_constraint_count_comparison() {
-    use crate::commitment::poseidon_config;
-    use ark_crypto_primitives::sponge::poseidon::constraints::PoseidonSpongeVar;
-    use ark_crypto_primitives::sponge::constraints::CryptographicSpongeVar;
+fn test_anemoi_constraint_count() {
+    // Measure Anemoi constraints for 2:1 hash
+    let cs = ConstraintSystem::<Fr>::new_ref();
+    let a = FpVar::new_witness(cs.clone(), || Ok(Fr::from(1u64))).unwrap();
+    let b = FpVar::new_witness(cs.clone(), || Ok(Fr::from(2u64))).unwrap();
+    let _ = anemoi_hash_two_var(cs.clone(), &a, &b).unwrap();
+    let constraints = cs.num_constraints();
 
-    // Measure Anemoi constraints
-    let cs_anemoi = ConstraintSystem::<Fr>::new_ref();
-    let a = FpVar::new_witness(cs_anemoi.clone(), || Ok(Fr::from(1u64))).unwrap();
-    let b = FpVar::new_witness(cs_anemoi.clone(), || Ok(Fr::from(2u64))).unwrap();
-    let _ = anemoi_hash_two_var(cs_anemoi.clone(), &a, &b).unwrap();
-    let anemoi_constraints = cs_anemoi.num_constraints();
+    println!("Anemoi 2:1 hash constraints: {}", constraints);
 
-    // Measure Poseidon constraints
-    let cs_poseidon = ConstraintSystem::<Fr>::new_ref();
-    let config = poseidon_config::<Fr>();
-    let a = FpVar::new_witness(cs_poseidon.clone(), || Ok(Fr::from(1u64))).unwrap();
-    let b = FpVar::new_witness(cs_poseidon.clone(), || Ok(Fr::from(2u64))).unwrap();
-    let inputs: Vec<FpVar<Fr>> = vec![a, b];
-    let mut sponge = PoseidonSpongeVar::new(cs_poseidon.clone(), &config);
-    sponge.absorb(&inputs).unwrap();
-    let _ = sponge.squeeze_field_elements(1).unwrap();
-    let poseidon_constraints = cs_poseidon.num_constraints();
-
-    println!("Anemoi constraints: {}", anemoi_constraints);
-    println!("Poseidon constraints: {}", poseidon_constraints);
-    println!(
-        "Ratio: {:.2}x",
-        poseidon_constraints as f64 / anemoi_constraints as f64
+    // Anemoi should have < 200 constraints for 2:1 hash
+    // With 21 rounds and optimized S-box witnessing
+    assert!(
+        constraints < 200,
+        "Expected < 200 constraints, got {}",
+        constraints
     );
-
-    // Anemoi should be more efficient
-    // Note: The actual ratio depends on the implementation details
 }

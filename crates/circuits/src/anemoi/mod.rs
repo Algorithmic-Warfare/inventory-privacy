@@ -17,5 +17,5 @@ mod gadgets;
 #[cfg(test)]
 mod tests;
 
-pub use native::{anemoi_hash, anemoi_hash_two, AnemoiState};
-pub use gadgets::{anemoi_hash_var, anemoi_hash_two_var};
+pub use native::{anemoi_hash, anemoi_hash_two, anemoi_hash_many, AnemoiState};
+pub use gadgets::{anemoi_hash_var, anemoi_hash_two_var, anemoi_hash_many_var};

@@ -56,14 +56,11 @@ mod tests {
     use crate::prove::{prove_capacity, prove_item_exists, InventoryState};
     use crate::setup::{setup_capacity, setup_item_exists};
     use ark_std::rand::{rngs::StdRng, SeedableRng};
-    use inventory_circuits::poseidon_config;
-    use std::sync::Arc;
 
     #[test]
     fn test_verify_item_exists() {
         let mut rng = StdRng::seed_from_u64(42);
-        let config = Arc::new(poseidon_config::<Fr>());
-        let keys = setup_item_exists(&mut rng, config.clone()).unwrap();
+        let keys = setup_item_exists(&mut rng).unwrap();
 
         // Create inventory with item
         let blinding = Fr::from(12345u64);
@@ -88,8 +85,7 @@ mod tests {
     #[test]
     fn test_verify_wrong_hash_fails() {
         let mut rng = StdRng::seed_from_u64(42);
-        let config = Arc::new(poseidon_config::<Fr>());
-        let keys = setup_item_exists(&mut rng, config.clone()).unwrap();
+        let keys = setup_item_exists(&mut rng).unwrap();
 
         // Create inventory with item
         let blinding = Fr::from(12345u64);
@@ -110,8 +106,7 @@ mod tests {
     #[test]
     fn test_verify_capacity() {
         let mut rng = StdRng::seed_from_u64(42);
-        let config = Arc::new(poseidon_config::<Fr>());
-        let keys = setup_capacity(&mut rng, config.clone()).unwrap();
+        let keys = setup_capacity(&mut rng).unwrap();
 
         let blinding = Fr::from(12345u64);
         let mut state = InventoryState::new(blinding);

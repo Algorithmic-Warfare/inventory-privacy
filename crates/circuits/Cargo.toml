@@ -16,10 +16,16 @@ ark-std = "0.4"
 ark-serialize = "0.4"
 num-bigint = "0.4"
 num-traits = "0.2"
+rayon = "1.10"
 
 [dev-dependencies]
 rand = "0.8"
 
 [features]
-default = []
-parallel = ["ark-ff/parallel", "ark-groth16/parallel"]
+default = ["parallel"]
+parallel = [
+    "ark-ff/parallel",
+    "ark-std/parallel",
+    "ark-groth16/parallel",
+    "ark-crypto-primitives/parallel",
+]
