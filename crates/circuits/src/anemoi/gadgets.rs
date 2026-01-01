@@ -6,7 +6,6 @@
 //! 2. Constraining w^5 = x (only 2 multiplication constraints)
 
 use ark_bn254::Fr;
-use ark_ff::Field;
 use ark_r1cs_std::{
     prelude::*,
     fields::fp::FpVar,
@@ -14,9 +13,8 @@ use ark_r1cs_std::{
 use ark_relations::r1cs::{ConstraintSystemRef, SynthesisError};
 
 use super::constants::{
-    NUM_ROUNDS, GENERATOR,
-    round_constants_c, round_constants_d,
-    exp_inv_alpha, beta, delta,
+    NUM_ROUNDS, GENERATOR, BETA, DELTA, ARK_C, ARK_D,
+    exp_inv_alpha,
 };
 
 /// Anemoi state as circuit variables.
@@ -63,14 +61,10 @@ fn exp_inv_alpha_var(
     Ok(w)
 }
 
-/// Compute beta constant as a circuit constant.
-fn beta_var() -> FpVar<Fr> {
-    FpVar::constant(beta())
-}
-
-/// Compute delta constant as a circuit constant.
-fn delta_var() -> FpVar<Fr> {
-    FpVar::constant(delta())
+/// Multiply by generator (g=3) in-circuit.
+/// Optimized as x.double() + x = 3x
+fn mul_by_generator_var(x: &FpVar<Fr>) -> Result<FpVar<Fr>, SynthesisError> {
+    Ok(x.double()? + x)
 }
 
 /// Apply the Flystel S-box in-circuit.
@@ -83,8 +77,8 @@ fn apply_sbox_var(
     cs: ConstraintSystemRef<Fr>,
     state: &mut AnemoiStateVar,
 ) -> Result<(), SynthesisError> {
-    let beta = beta_var();
-    let delta = delta_var();
+    let beta = FpVar::constant(Fr::from(BETA));
+    let delta = FpVar::constant(DELTA);
 
     // Step 1: x = x - beta * y^2
     let y_squared = state.y.square()?;
@@ -103,14 +97,13 @@ fn apply_sbox_var(
 
 /// Apply the MDS layer in-circuit.
 ///
-/// For 2-cell state, the MDS matrix is:
-/// [ g,   1 ]
-/// [ 1, g+1 ]
+/// For 2-cell state with g=3:
+/// new_x = 3x + y
+/// new_y = x + 4y
 fn apply_mds_var(state: &mut AnemoiStateVar) -> Result<(), SynthesisError> {
-    let g = FpVar::constant(Fr::from(GENERATOR));
     let g_plus_one = FpVar::constant(Fr::from(GENERATOR + 1));
 
-    let new_x = &g * &state.x + &state.y;
+    let new_x = mul_by_generator_var(&state.x)? + &state.y;
     let new_y = &state.x + &g_plus_one * &state.y;
 
     state.x = new_x;
@@ -123,11 +116,9 @@ fn apply_mds_var(state: &mut AnemoiStateVar) -> Result<(), SynthesisError> {
 fn apply_round_constants_var(
     state: &mut AnemoiStateVar,
     round: usize,
-    c: &[Fr],
-    d: &[Fr],
 ) -> Result<(), SynthesisError> {
-    state.x = &state.x + FpVar::constant(c[round]);
-    state.y = &state.y + FpVar::constant(d[round]);
+    state.x = &state.x + FpVar::constant(ARK_C[round]);
+    state.y = &state.y + FpVar::constant(ARK_D[round]);
     Ok(())
 }
 
@@ -136,12 +127,9 @@ fn permutation_var(
     cs: ConstraintSystemRef<Fr>,
     state: &mut AnemoiStateVar,
 ) -> Result<(), SynthesisError> {
-    let c = round_constants_c();
-    let d = round_constants_d();
-
     for round in 0..NUM_ROUNDS {
         // ARK layer (add round constants)
-        apply_round_constants_var(state, round, &c, &d)?;
+        apply_round_constants_var(state, round)?;
 
         // MDS layer (linear diffusion)
         apply_mds_var(state)?;
@@ -187,6 +175,7 @@ pub fn anemoi_hash_var(
 mod gadget_tests {
     use super::*;
     use super::super::native::anemoi_hash_two;
+    use ark_ff::Field;
     use ark_relations::r1cs::ConstraintSystem;
 
     #[test]
@@ -230,9 +219,8 @@ mod gadget_tests {
         let num_constraints = cs.num_constraints();
         println!("Anemoi constraint count: {}", num_constraints);
 
-        // Anemoi should have roughly half the constraints of Poseidon
-        // Poseidon 2:1 with 65 rounds has ~300 constraints
-        // Anemoi with 21 rounds should have ~150 constraints
+        // Anemoi should have fewer constraints than Poseidon
+        // With 21 rounds and optimized S-box: ~126 constraints
         assert!(
             num_constraints < 200,
             "Expected < 200 constraints, got {}",

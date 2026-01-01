@@ -1,12 +1,13 @@
 //! Native Anemoi implementation for BN254.
 //!
 //! This provides the hash function for use outside of circuits.
+//! Implementation matches anemoi-rust for compatibility.
 
 use ark_bn254::Fr;
 use ark_ff::Field;
 use super::constants::{
-    NUM_ROUNDS, GENERATOR, beta, delta,
-    round_constants_c, round_constants_d, exp_inv_alpha,
+    NUM_ROUNDS, GENERATOR, BETA, ARK_C, ARK_D,
+    exp_inv_alpha, mul_by_generator, delta,
 };
 
 /// Anemoi state (2 field elements for 2:1 mode).
@@ -39,12 +40,12 @@ impl Default for AnemoiState {
 
 /// Apply the Flystel S-box to the state.
 ///
-/// The Flystel S-box operates on (x, y) and produces (x', y'):
+/// The open Flystel S-box from anemoi-rust:
 /// 1. x = x - beta * y^2
 /// 2. y = y - x^(1/alpha)
 /// 3. x = x + beta * y^2 + delta
 fn apply_sbox(state: &mut AnemoiState) {
-    let beta = beta();
+    let beta = Fr::from(BETA);
     let delta = delta();
 
     // Step 1: x = x - beta * y^2
@@ -62,16 +63,13 @@ fn apply_sbox(state: &mut AnemoiState) {
 
 /// Apply the MDS layer (linear diffusion).
 ///
-/// For 2-cell state, the MDS matrix is:
-/// [ g,   1 ]
-/// [ 1, g+1 ]
-///
-/// Where g is the generator.
+/// For 2-cell state with generator g=3, the MDS operation is:
+/// new_x = g * x + y = 3x + y
+/// new_y = x + (g+1) * y = x + 4y
 fn apply_mds(state: &mut AnemoiState) {
-    let g = Fr::from(GENERATOR);
-    let g_plus_one = g + Fr::from(1u64);
+    let g_plus_one = Fr::from(GENERATOR + 1);
 
-    let new_x = g * state.x + state.y;
+    let new_x = mul_by_generator(state.x) + state.y;
     let new_y = state.x + g_plus_one * state.y;
 
     state.x = new_x;
@@ -79,19 +77,16 @@ fn apply_mds(state: &mut AnemoiState) {
 }
 
 /// Apply round constants (ARK layer).
-fn apply_round_constants(state: &mut AnemoiState, round: usize, c: &[Fr], d: &[Fr]) {
-    state.x += c[round];
-    state.y += d[round];
+fn apply_round_constants(state: &mut AnemoiState, round: usize) {
+    state.x += ARK_C[round];
+    state.y += ARK_D[round];
 }
 
 /// Execute the full Anemoi permutation.
 pub fn permutation(state: &mut AnemoiState) {
-    let c = round_constants_c();
-    let d = round_constants_d();
-
     for round in 0..NUM_ROUNDS {
         // ARK layer (add round constants)
-        apply_round_constants(state, round, &c, &d);
+        apply_round_constants(state, round);
 
         // MDS layer (linear diffusion)
         apply_mds(state);
