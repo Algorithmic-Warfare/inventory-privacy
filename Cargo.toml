@@ -4,6 +4,7 @@ members = [
     "crates/circuits",
     "crates/prover",
     "crates/proof-server",
+    "crates/r1cs-optimizer",
 ]
 
 [workspace.package]
