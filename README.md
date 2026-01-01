@@ -1,28 +1,27 @@
-# Inventory Privacy PoC
+# Inventory Privacy
 
-A proof-of-concept demonstrating hidden on-chain inventory state with verifiable ZK operations.
+Private on-chain inventory state with verifiable ZK operations using Sparse Merkle Trees and Groth16 proofs.
 
 ## Overview
 
 This project implements private inventories on Sui where:
-- Inventory contents are hidden (only a Poseidon commitment is stored on-chain)
+- Inventory contents are hidden (only an SMT root commitment is stored on-chain)
 - Operations are verifiable via Groth16 ZK proofs
-- State transitions are proven correct without revealing actual quantities
+- State transitions are proven correct without revealing actual contents
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     INVENTORY-PRIVACY POC                        │
-│                                                                  │
-│  Similar to location-privacy, but for inventory data:            │
-│                                                                  │
-│  location-privacy:                                               │
-│    commitment = Poseidon(x, y, z, blinding)                     │
-│    proves: "I'm within distance D"                              │
-│                                                                  │
-│  inventory-privacy:                                              │
-│    commitment = Poseidon(inventory_data, blinding)              │
-│    proves: "I have ≥N of item X" / "state transition valid"     │
-│                                                                  │
+│                      INVENTORY PRIVACY                          │
+│                                                                 │
+│  On-chain:   SMT Root (32 bytes)                               │
+│  Off-chain:  Full inventory state + Merkle proofs              │
+│                                                                 │
+│  Proves:                                                        │
+│    - "I have item X at quantity Q" (membership)                │
+│    - "I can deposit/withdraw X" (valid state transition)       │
+│    - "My inventory is within capacity" (volume check)          │
+│                                                                 │
+│  Reveals: Nothing except the statement is true                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -31,23 +30,48 @@ This project implements private inventories on Sui where:
 ```
 inventory-privacy/
 ├── crates/
-│   ├── circuits/          # ZK circuit definitions (arkworks)
+│   ├── circuits/          # ZK circuits (arkworks, uses anemoi)
 │   ├── prover/            # Proof generation library
 │   └── proof-server/      # HTTP API for proof generation
 ├── packages/
 │   └── inventory/         # Sui Move contracts
-├── scripts/               # Setup and test scripts
+├── scripts/               # Setup and deployment scripts
 └── keys/                  # Generated proving/verifying keys
 ```
 
+### External Dependencies
+
+| Crate | Description | Repository |
+|-------|-------------|------------|
+| `anemoi` | ZK-friendly hash function | [github.com/abderraouf-belalia/anemoi](https://github.com/abderraouf-belalia/anemoi) |
+
 ## Circuits
 
-| Circuit | Purpose | Public Inputs |
-|---------|---------|---------------|
-| `ItemExistsCircuit` | Prove inventory contains ≥N of item X | commitment, item_id, min_quantity |
-| `WithdrawCircuit` | Prove valid withdrawal with state transition | old/new commitment, item_id, amount |
-| `DepositCircuit` | Prove valid deposit with state transition | old/new commitment, item_id, amount |
-| `TransferCircuit` | Prove valid transfer between inventories | src/dst old/new commitments, item_id, amount |
+All circuits use the **Anemoi** hash function (CRYPTO 2023) for ~2x constraint reduction compared to Poseidon.
+
+| Circuit | Purpose | Constraints | Public Inputs |
+|---------|---------|-------------|---------------|
+| `StateTransitionCircuit` | Prove valid deposit/withdraw with capacity check | ~7,520 | signal_hash (compressed) |
+| `ItemExistsSMTCircuit` | Prove inventory contains item at quantity | ~2,180 | root, item_id, quantity, signal_hash |
+| `CapacitySMTCircuit` | Prove inventory volume is within capacity | ~379 | root, capacity, signal_hash |
+
+### Commitment Scheme
+
+Inventories are committed using a **Sparse Merkle Tree** (depth 16):
+
+```
+                    root
+                   /    \
+                ...      ...
+               /            \
+         leaf[slot_i]    leaf[slot_j]
+              |               |
+    hash(item_id, qty)  hash(item_id, qty)
+```
+
+- Each slot is a leaf: `hash(item_id, quantity)`
+- Empty slots use a canonical empty hash
+- Only the root is stored on-chain (~32 bytes)
 
 ## Getting Started
 
@@ -55,7 +79,7 @@ inventory-privacy/
 
 - Rust 1.75+
 - Sui CLI
-- curl (for API testing)
+- Node.js (for deployment scripts)
 
 ### Build
 
@@ -70,11 +94,10 @@ cd packages/inventory && sui move build
 ### Run Tests
 
 ```bash
-# Run all tests
-./scripts/test.sh
-
-# Or run separately:
+# Run all Rust tests
 cargo test --all
+
+# Run Move tests
 cd packages/inventory && sui move test
 ```
 
@@ -82,7 +105,7 @@ cd packages/inventory && sui move test
 
 ```bash
 # Run trusted setup (generates proving/verifying keys)
-./scripts/setup.sh
+cargo run --release -p inventory-prover --example setup
 ```
 
 ### Start Proof Server
@@ -99,108 +122,78 @@ cargo run --release -p inventory-proof-server
 curl http://localhost:3000/health
 ```
 
-### Generate Blinding Factor
+### Generate State Transition Proof
 ```bash
-curl -X POST http://localhost:3000/api/blinding/generate
-```
-
-### Create Commitment
-```bash
-curl -X POST http://localhost:3000/api/commitment/create \
+curl -X POST http://localhost:3000/api/prove/state-transition \
   -H "Content-Type: application/json" \
   -d '{
-    "inventory": [{"item_id": 1, "quantity": 100}],
-    "blinding": "0x..."
+    "old_root": "0x...",
+    "new_root": "0x...",
+    "item_id": 1,
+    "old_quantity": 100,
+    "new_quantity": 70,
+    "merkle_proof": [...],
+    "capacity": 1000,
+    "current_volume": 500
   }'
 ```
 
-### Prove Item Exists
+### Generate Item Exists Proof
 ```bash
 curl -X POST http://localhost:3000/api/prove/item-exists \
   -H "Content-Type: application/json" \
   -d '{
-    "inventory": [{"item_id": 1, "quantity": 100}],
-    "blinding": "0x...",
+    "root": "0x...",
     "item_id": 1,
-    "min_quantity": 50
+    "quantity": 100,
+    "merkle_proof": [...]
   }'
 ```
 
-### Prove Withdraw
-```bash
-curl -X POST http://localhost:3000/api/prove/withdraw \
-  -H "Content-Type: application/json" \
-  -d '{
-    "old_inventory": [{"item_id": 1, "quantity": 100}],
-    "old_blinding": "0x...",
-    "new_blinding": "0x...",
-    "item_id": 1,
-    "amount": 30
-  }'
-```
-
-## Data Structures
-
-### Inventory (Rust)
-```rust
-pub const MAX_ITEM_SLOTS: usize = 16;
-
-pub struct Inventory {
-    pub slots: [(item_id: u32, quantity: u64); MAX_ITEM_SLOTS],
-}
-```
-
-### PrivateInventory (Move)
-```move
-struct PrivateInventory has key, store {
-    id: UID,
-    commitment: vector<u8>,  // 32 bytes - Poseidon hash
-    owner: address,
-    nonce: u64,
-}
-```
-
-## Commitment Scheme
+## Data Flow
 
 ```
-commitment = Poseidon(slot0_id, slot0_qty, slot1_id, slot1_qty, ..., blinding)
+1. User has off-chain inventory state (full SMT)
+2. User wants to withdraw item X, quantity Q
+3. User generates Merkle proof for slot containing X
+4. Prover generates Groth16 proof:
+   - Proves old_root contains (X, old_qty) at slot
+   - Proves new_qty = old_qty - Q (no underflow)
+   - Proves new_root is correct after update
+   - Proves volume stays within capacity
+5. On-chain verifier checks proof
+6. Contract updates stored root: old_root → new_root
 ```
 
-The commitment hides:
+## Security Model
+
+**What's hidden:**
 - Which items are in the inventory
-- How much of each item exists
-- The structure of the inventory
+- Quantities of each item
+- Inventory structure and slot assignments
 
-The blinding factor ensures the commitment is hiding even if the inventory contents could be guessed.
+**What's revealed:**
+- Frequency of operations (state transitions)
+- That a valid operation occurred
 
-## Security Considerations
+**Trusted Setup:** The current implementation uses ceremony-generated parameters. Production deployments should use a proper multi-party trusted setup.
 
-- **Trusted Setup**: The current implementation uses a simple deterministic setup for PoC. Production use requires a proper trusted setup ceremony.
-- **Blinding Factors**: Each state transition should use a fresh blinding factor to prevent linking.
-- **Replay Protection**: The nonce prevents replaying old proofs.
+## Performance
 
-## Performance Estimates
+| Operation | Proving Time | Proof Size |
+|-----------|--------------|------------|
+| State Transition | ~800ms | 192 bytes |
+| Item Exists | ~300ms | 192 bytes |
+| Capacity Check | ~100ms | 192 bytes |
 
-| Circuit | Constraints | Proving Time |
-|---------|-------------|--------------|
-| ItemExistsCircuit | ~400 | ~40ms |
-| WithdrawCircuit | ~600 | ~60ms |
-| DepositCircuit | ~600 | ~60ms |
-| TransferCircuit | ~1000 | ~100ms |
+*Measured on Apple M1. Parallel proof generation supported.*
 
-*Estimates based on 16 fixed slots. Actual performance depends on hardware.*
+## Related Projects
 
-## Future Improvements
-
-1. **Volume-Based Inventory**: Use Sparse Merkle Trees for unbounded item types with volume limits
-2. **Batch Operations**: Combine multiple withdrawals/deposits into single proofs
-3. **Recursive Proofs**: Aggregate multiple proofs for cheaper on-chain verification
-4. **Hardware Acceleration**: Use GPU/FPGA for faster proof generation
-
-## Related
-
-- [location-privacy](../): The original location privacy PoC this is based on
-- [ZK Study Notes](../docs/zk-study/): Design documents and Q&A
+| Project | Description |
+|---------|-------------|
+| [anemoi](https://github.com/abderraouf-belalia/anemoi) | ZK-friendly hash function |
+| [r1cs-optimizer](https://github.com/abderraouf-belalia/r1cs-optimizer) | R1CS constraint optimizer |
 
 ## License
 
