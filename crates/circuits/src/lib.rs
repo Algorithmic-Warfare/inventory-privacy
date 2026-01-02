@@ -22,6 +22,9 @@ pub mod state_transition;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod optimization_bench;
+
 // Re-export poseidon hash functions
 pub use poseidon::{poseidon_hash, poseidon_hash_two, poseidon_hash_many};
 

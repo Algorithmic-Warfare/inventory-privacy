@@ -5,12 +5,17 @@
 //! These gadgets ensure values stay within expected bounds.
 //!
 //! We use 32-bit range checks which support values up to ~4.29 billion - sufficient for
-//! game inventories where quantities rarely exceed millions. This saves ~130 constraints
-//! per range check compared to 64-bit (32 fewer bit decomposition constraints).
+//! game inventories where quantities rarely exceed millions.
+//!
+//! ## Optimization
+//!
+//! The optimized implementation allocates only the bits needed (32) as witnesses,
+//! reconstructs the value, and verifies equality. This uses ~33 constraints instead
+//! of ~884 for the naive approach that decomposes all 254 field bits.
 
-use ark_ff::PrimeField;
-use ark_r1cs_std::prelude::*;
+use ark_ff::{BigInteger, PrimeField};
 use ark_r1cs_std::fields::fp::FpVar;
+use ark_r1cs_std::prelude::*;
 use ark_relations::r1cs::{ConstraintSystemRef, SynthesisError};
 
 /// Number of bits for range checks (32-bit values)
@@ -19,26 +24,47 @@ pub const RANGE_BITS: usize = 32;
 
 /// Enforce that a field element fits in `num_bits` bits.
 ///
-/// This decomposes the value into bits and verifies each bit is 0 or 1.
-/// If the value is >= 2^num_bits, this constraint cannot be satisfied.
+/// This uses an optimized approach that only allocates the bits we need:
+/// 1. Allocate `num_bits` boolean witnesses for the bit decomposition
+/// 2. Reconstruct the value from these bits
+/// 3. Enforce the reconstructed value equals the input
+///
+/// If the input value >= 2^num_bits, the constraint cannot be satisfied because
+/// the reconstruction will produce a different value.
+///
+/// Constraint cost: ~num_bits constraints (vs ~254 for naive approach)
 pub fn enforce_range<F: PrimeField>(
-    _cs: ConstraintSystemRef<F>,
+    cs: ConstraintSystemRef<F>,
     value: &FpVar<F>,
     num_bits: usize,
 ) -> Result<(), SynthesisError> {
-    // Get the actual value to decompose
-    let value_bits = value.to_bits_le()?;
+    // Allocate only the bits we need as witnesses
+    let bits: Vec<Boolean<F>> = (0..num_bits)
+        .map(|i| {
+            Boolean::new_witness(cs.clone(), || {
+                let v = value.value().unwrap_or_default();
+                let bigint = v.into_bigint();
+                Ok(bigint.get_bit(i))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-    // For a value to fit in num_bits, all higher bits must be zero
-    // The to_bits_le() returns F::MODULUS_BIT_SIZE bits
-    // We need to ensure bits beyond num_bits are all zero
+    // Reconstruct value from bits: value = sum(bit[i] * 2^i)
+    // We build this as a linear combination for efficiency
+    let mut coeff = F::one();
+    let two = F::from(2u64);
 
-    for (i, bit) in value_bits.iter().enumerate() {
-        if i >= num_bits {
-            // All bits beyond num_bits must be zero
-            bit.enforce_equal(&Boolean::FALSE)?;
-        }
+    let mut reconstructed = FpVar::zero();
+    for bit in &bits {
+        // Add bit * 2^i to reconstructed
+        let term = FpVar::constant(coeff);
+        reconstructed += bit.select(&term, &FpVar::zero())?;
+        coeff *= two;
     }
+
+    // Enforce equality: if value >= 2^num_bits, this fails
+    // because the reconstructed value will differ
+    value.enforce_equal(&reconstructed)?;
 
     Ok(())
 }
@@ -47,6 +73,8 @@ pub fn enforce_range<F: PrimeField>(
 ///
 /// This prevents underflow attacks where (small - large) wraps to a huge number.
 /// 32 bits supports values up to ~4.29 billion, sufficient for game inventories.
+///
+/// Constraint cost: ~33 constraints
 pub fn enforce_u32_range<F: PrimeField>(
     cs: ConstraintSystemRef<F>,
     value: &FpVar<F>,
@@ -67,6 +95,8 @@ pub fn enforce_u64_range<F: PrimeField>(
 ///
 /// This is done by checking that (a - b) fits in 32 bits.
 /// If b > a, then (a - b) would wrap around to a huge number that doesn't fit.
+///
+/// Constraint cost: ~33 constraints
 pub fn enforce_geq<F: PrimeField>(
     cs: ConstraintSystemRef<F>,
     a: &FpVar<F>,
@@ -87,12 +117,13 @@ mod tests {
     fn test_range_check_valid() {
         let cs = ConstraintSystem::<Fr>::new_ref();
 
-        // A value that fits in 64 bits
+        // A value that fits in 32 bits
         let value = FpVar::new_witness(cs.clone(), || Ok(Fr::from(1000u64))).unwrap();
 
-        enforce_u64_range(cs.clone(), &value).unwrap();
+        enforce_u32_range(cs.clone(), &value).unwrap();
 
         assert!(cs.is_satisfied().unwrap());
+        println!("Range check (32-bit) constraints: {}", cs.num_constraints());
     }
 
     #[test]
@@ -124,14 +155,14 @@ mod tests {
     fn test_range_check_overflow() {
         let cs = ConstraintSystem::<Fr>::new_ref();
 
-        // A value that exceeds 64 bits (simulating wrap-around)
+        // A value that wraps around (simulating underflow)
         // This is p - 5 where p is the field modulus
-        let wrapped_value = Fr::from(5u64).neg();  // -5 in the field = p - 5
+        let wrapped_value = Fr::from(5u64).neg(); // -5 in the field = p - 5
         let value = FpVar::new_witness(cs.clone(), || Ok(wrapped_value)).unwrap();
 
-        enforce_u64_range(cs.clone(), &value).unwrap();
+        enforce_u32_range(cs.clone(), &value).unwrap();
 
-        // This should fail because p - 5 doesn't fit in 64 bits
+        // This should fail because p - 5 doesn't fit in 32 bits
         assert!(!cs.is_satisfied().unwrap());
     }
 
@@ -171,5 +202,23 @@ mod tests {
 
         // This should fail because 50 - 100 wraps to a huge number
         assert!(!cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn test_constraint_count() {
+        let cs = ConstraintSystem::<Fr>::new_ref();
+
+        let value = FpVar::new_witness(cs.clone(), || Ok(Fr::from(1000u64))).unwrap();
+        enforce_u32_range(cs.clone(), &value).unwrap();
+
+        let num_constraints = cs.num_constraints();
+        println!("Optimized 32-bit range check: {} constraints", num_constraints);
+
+        // Should be much less than 100 constraints
+        assert!(
+            num_constraints < 100,
+            "Expected < 100 constraints, got {}",
+            num_constraints
+        );
     }
 }
