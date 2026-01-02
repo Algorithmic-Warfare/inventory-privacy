@@ -5,6 +5,7 @@ crates/*/keys/
 
 # Web build
 web/dist/
+web/public/deployment.json
 
 # IDE
 .idea/
@@ -18,6 +19,7 @@ Thumbs.db
 
 # Move build artifacts
 packages/*/build/
+packages/*/Move.lock
 
 # Logs
 *.log
