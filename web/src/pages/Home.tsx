@@ -72,8 +72,8 @@ OFF-CHAIN: SMT state, blinding factor (kept secret)`}
               <div className="text-small text-muted">Max Item Types</div>
             </div>
             <div className="text-center">
-              <div className="text-accent">~100ms</div>
-              <div className="text-small text-muted">Proof Generation</div>
+              <div className="text-accent">~13,445</div>
+              <div className="text-small text-muted">Total Constraints</div>
             </div>
             <div className="text-center">
               <div className="text-accent">3</div>
@@ -103,7 +103,7 @@ OFF-CHAIN: SMT state, blinding factor (kept secret)`}
                 <div>[OK] Enforce capacity limit</div>
                 <div>[OK] Compute new commitment</div>
               </div>
-              <div className="badge mt-2">8,255 constraints</div>
+              <div className="badge mt-2">8,597 constraints</div>
             </div>
 
             <div className="card-simple">
